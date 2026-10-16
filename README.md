@@ -1,6 +1,6 @@
 # tongyun-database
 
-Tongyun 系列的**数据库层约定与可复用技能**（公开后给新 Web 仓直接复用）。
+Tongyun 系列的**数据库层约定与可复用技能**（给新 Web 仓直接复用）。
 
 > 这不是又一个业务应用仓。这里只约定：怎么建 schema、怎么迁移、怎么在 SQLite / Cloudflare D1（及可替换的 SQL 后端）上用同一套应用代码；并沉淀成 skill / 模板，让新仓 `init` 时就能抄。
 
@@ -45,8 +45,8 @@ Tongyun 系列的**数据库层约定与可复用技能**（公开后给新 Web 
 
 ## 状态
 
-草稿待阿橦过目。过目通过后再改为 **GitHub 公开**；当前若已建仓则保持私有直到明确说「公开」。
+已公开。技能正文与 Drizzle 模板见 `docs/todo.md`，按待办推进。
 
 ## License
 
-MIT（与 Tongyun 开源工具一致；若过目时要改再改）。
+MIT。
