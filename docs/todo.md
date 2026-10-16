@@ -1,18 +1,17 @@
-# tongyun-database 待办
+# 待办
 
-只列事项，本轮不实现大功能。
+当前范围以 [PRD](prd.md) 和 [路线](plan.md) 为准。
 
-## P0（过目通过后）
-- [ ] 仓库改公开 + README 定稿
-- [ ] 写 `skills/tong-database/SKILL.md`（何时用、schema 约定、迁移步骤、SQLite↔D1 差异）
-- [ ] `templates/drizzle-sqlite/` 与 `templates/drizzle-d1/` 最小可跑示例（hello table + migrate）
-- [ ] 在 `tongyun-scaffold` 的 init 文档里加一句：Web 仓可挂本仓 database skill
-
-## P1
-- [ ] 通用范例：`users` / `outbox` 是否值得进 templates（默认不进业务表）
-- [ ] CI：对 templates 跑 `drizzle-kit check` / 最小 migrate
-- [ ] 与 tongyun-api / verse 等现有库的对照表（各用啥、如何渐进对齐）
-
-## 不做
-- [ ] 不把各产品 schema 搬进本仓
-- [ ] 不在本仓部署生产数据库
+- [x] 本地查询工作台、表结构与变更检查器
+- [x] 共享 Agent HTTP API、计划与操作记录
+- [x] 单行 UPDATE 的预览、确认、冲突检测与回滚
+- [x] 默认 1000 行、结果虚拟滚动、主键分页与百万行基准
+- [x] MySQL / Redis 添加、测试、切换连接，默认只读，密码本机加密
+- [x] MySQL 单行 UPDATE 与 Redis 五种类型/TTL/删除的计划及恢复
+- [x] 远程结果未知时持久化阻止重试，私有操作参数可追溯
+- [ ] 连接编辑/移除、PostgreSQL 与系统钥匙串
+- [ ] 真实身份、授权范围、外置审计和敏感字段策略
+- [ ] 可取消查询、索引诊断、多查询标签页、筛选与排序
+- [ ] INSERT / DELETE、批量与 DDL 的数据库特定恢复方案
+- [ ] Tauri 桌面壳、MCP、与 Dev / API / Git 共用任务身份
+- [ ] Drizzle / D1 模板及方言适配验证

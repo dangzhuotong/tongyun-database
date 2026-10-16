@@ -9,3 +9,9 @@ target/
 dist/
 build/
 .venv/
+.local/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.private.json
