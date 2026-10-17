@@ -2,6 +2,14 @@
 
 当前范围以 [PRD](prd.md) 和 [路线](plan.md) 为准。
 
+## 边界（不要放进本仓）
+
+- 真实凭据、客户数据、生产 schema 与业务迁移；测试只用合成数据及本项目拥有的隔离实例。
+- `templates/` 运行时：Drizzle / SQLite / D1 模板尚未实现、尚未选定，[候选 ADR](decisions/2026-10-16-drizzle-sqlite-d1.md) 仅供参考。
+- `docs/tasks/` 下的任务文件不属于本仓待办，不在此修改。
+
+## 进度
+
 - [x] 本地查询工作台、表结构与变更检查器
 - [x] 共享 Agent HTTP API、计划与操作记录
 - [x] 单行 UPDATE 的预览、确认、冲突检测与回滚
@@ -14,4 +22,4 @@
 - [ ] 可取消查询、索引诊断、多查询标签页、筛选与排序
 - [ ] INSERT / DELETE、批量与 DDL 的数据库特定恢复方案
 - [ ] Tauri 桌面壳、MCP、与 Dev / API / Git 共用任务身份
-- [ ] Drizzle / D1 模板及方言适配验证
+- [ ] 先定模板目标（本地 SQLite 或边缘 D1，二选一或明确分工），再做 Drizzle 模板及方言适配验证
