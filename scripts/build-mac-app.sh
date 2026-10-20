@@ -117,11 +117,11 @@ APPLESCRIPT
   exit 1
 fi
 
-# ---- 2. 检查 Node 版本（需 ≥ 20） ----
+# ---- 2. 检查 Node 版本（需 ≥ 24） ----
 NODE_MAJOR="$("$NODE" -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
-if [ "$NODE_MAJOR" -lt 20 ] 2>/dev/null; then
+if [ "$NODE_MAJOR" -lt 24 ] 2>/dev/null; then
   osascript <<APPLESCRIPT
-display dialog "当前 Node.js 版本为 ${NODE_MAJOR}，橦云数据库需要 20 或更高版本。\n\n请升级后再试。" \
+display dialog "当前 Node.js 版本为 ${NODE_MAJOR}，橦云数据库需要 24 或更高版本。\n\n请升级后再试。" \
   with title "Node.js 版本过旧" \
   buttons {"打开 nodejs.org", "取消"} \
   default button "打开 nodejs.org" \
