@@ -78,7 +78,11 @@ export function createWorkbench({ filename, token }) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const localDir = fileURLToPath(new URL('../.local/', import.meta.url));
+  // TONGYUN_DATA_DIR: optional override for the data directory (defaults to .local/ next to the repo).
+  // When set, all runtime files (sandbox.sqlite, agent-token, endpoint.json) are stored there instead.
+  const localDir = process.env.TONGYUN_DATA_DIR
+    ? resolve(process.env.TONGYUN_DATA_DIR)
+    : fileURLToPath(new URL('../.local/', import.meta.url));
   mkdirSync(localDir, { recursive: true, mode: 0o700 }); chmodSync(localDir, 0o700);
   const filename = join(localDir, 'sandbox.sqlite');
   if (!existsSync(filename)) {
@@ -97,7 +101,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_PORT');
   server.listen(port, '127.0.0.1', () => {
     const url = `http://127.0.0.1:${server.address().port}`;
-    writeFileSync(join(localDir, 'endpoint.json'), JSON.stringify({ url, tokenFile: '.local/agent-token', environment: 'sandbox' }), { mode: 0o600 });
+    writeFileSync(join(localDir, 'endpoint.json'), JSON.stringify({ url, tokenFile: process.env.TONGYUN_DATA_DIR ? join(localDir, 'agent-token') : '.local/agent-token', environment: 'sandbox' }), { mode: 0o600 });
     console.log(`橦云数据库 ${url}\nAgent 接入信息：.local/endpoint.json（令牌不写日志）；连接默认只读`);
   });
 }
