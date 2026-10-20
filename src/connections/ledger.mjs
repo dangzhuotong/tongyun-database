@@ -26,7 +26,8 @@ export class RemoteLedger {
       this.event({ operationId, action, planId: result?.id ?? planId, outcome: 'succeeded' });
       return { operationId, ...result };
     } catch (error) {
-      this.event({ operationId, action, planId, outcome: 'failed', code: error instanceof ChangeError ? error.code : 'REMOTE_ERROR' });
+      const code = error instanceof ChangeError ? error.code : 'REMOTE_ERROR';
+      this.event({ operationId, action, planId, outcome: code === 'QUERY_CANCELLED' ? 'cancelled' : 'failed', code });
       throw error instanceof ChangeError ? error : new ChangeError('REMOTE_ERROR');
     }
   }

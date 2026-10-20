@@ -14,10 +14,11 @@
 | GET /api/capabilities | 当前连接、实际支持的工具及限制 |
 | GET /api/schema | SQL 基础表树；MySQL 列元数据按表懒加载 |
 | GET /api/schema?table=名称 | MySQL 指定表的列及建表 SQL |
-| POST /api/query | `{sql}`；受限只读 SELECT，最多 1000 行 / 2 MiB |
+| POST /api/query | `{sql, queryId?}`；受限只读 SELECT，最多 1000 行 / 2 MiB。queryId 为 UUID；省略时由服务端生成。响应含 `queryId` 与 `status`：`completed` 或 `cancelled` |
+| POST /api/queries/:queryId/cancel | `{}`；取消同一连接、任务、环境下正在执行或尚未开始的查询。MySQL 用另一连接执行 `KILL QUERY <threadId>`，SQLite 中止查询进程，Redis SCAN 中断分批循环。写入 `cancel_query` 审计；查询本身的审计结果为 `cancelled` |
 | GET /api/queries/:operationId | 显式读取同连接、环境、任务的私有原始 SQL/参数 |
 | POST /api/browse | `{table,after?}`；单主键游标分页，after 为字符串，返回 nextCursor |
-| POST /api/redis/scan | `{pattern?,cursor?}`；默认 * / 0，COUNT=1000 提示；最多返回 1000 个 Key，nextCursor 可为不透明本机游标 |
+| POST /api/redis/scan | `{pattern?,cursor?,queryId?}`；默认 * / 0，COUNT=1000 提示；最多返回 1000 个 Key，nextCursor 可为不透明本机游标。queryId 与 `POST /api/queries/:queryId/cancel` 相同，取消会中断扫描循环 |
 | POST /api/redis/read | `{key}`；类型、值、TTL、内存；仅支持受限大小的 UTF-8 常见类型 |
 | POST /api/plans | SQL：`{table,key,changes}`；Redis：`{key,changes:{action,...}}` |
 | GET /api/plans | 当前连接/任务/环境最近 100 份摘要 |

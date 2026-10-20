@@ -1,6 +1,7 @@
 import { createClient, RESP_TYPES } from 'redis';
 import { ChangeError } from '../change-control/core.mjs';
 import { requireValue } from './store.mjs';
+import { mapInChunks } from './redis-scan.mjs';
 
 const maxBytes = 1048576;
 const options = { typeMapping: { [RESP_TYPES.BLOB_STRING]: Buffer } };
@@ -73,23 +74,25 @@ export class RedisAdapter {
     } finally { clearTimeout(timer); if (client.isOpen) client.destroy(); }
   }
   async test() { return this.using(async c => { await c.ping(); const info = await c.info('server'); const version = /redis_version:([^\r\n]+)/.exec(info)?.[1]; requireValue(Number(version?.split('.')[0]) >= 7, 'REDIS_7_REQUIRED'); return { engine: 'redis', version }; }); }
-  async scan({ cursor = '0', pattern = '*' }, budget = 5000) {
+  async scan({ cursor = '0', pattern = '*' }, budget = 5000, signal) {
     requireValue(typeof cursor === 'string' && /^\d{1,20}$/.test(cursor), 'INVALID_CURSOR');
     requireValue(typeof pattern === 'string' && pattern.length <= 200, 'INVALID_PATTERN');
+    if (signal?.aborted) throw new ChangeError('QUERY_CANCELLED');
     return this.using(async c => {
+      if (signal?.aborted) throw new ChangeError('QUERY_CANCELLED');
       // COUNT is a hint, not a hard page size. A bounded spill cursor retains oversized batches.
       const [next, batch] = await c.sendCommand(['SCAN', cursor, 'MATCH', pattern, 'COUNT', '1000'], options);
       const keys = [...new Set(batch.map(text))];
       requireValue(keys.length <= 10000, 'SCAN_BATCH_TOO_LARGE');
       requireValue(keys.every(key=>Buffer.byteLength(key)<=2048), 'KEY_TOO_LARGE');
-      const rows = [];
-      for (let i = 0; i < keys.length; i += 50) {
-        const chunk = await Promise.all(keys.slice(i, i + 50).map(async key => {
+      const rows = await mapInChunks(keys, 50, signal, async chunk => {
+        const loaded = await Promise.all(chunk.map(async key => {
+          if (signal?.aborted) throw new ChangeError('QUERY_CANCELLED');
           const [type, ttl, memory] = await Promise.all([c.type(key), c.pTTL(key), c.memoryUsage(key)]);
           return { key, type, ttlMs: ttl, memoryBytes: memory ?? 0 };
         }));
-        rows.push(...chunk.filter(row => row.type !== 'none'));
-      }
+        return loaded.filter(row => row.type !== 'none');
+      });
       return { rows, cursor: text(next), scanHint: 1000 };
     },budget);
   }

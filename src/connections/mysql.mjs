@@ -3,6 +3,7 @@ import sqlParser from 'node-sql-parser';
 import { requireValue } from './store.mjs';
 import { ChangeError } from '../change-control/core.mjs';
 import { digest } from './ledger.mjs';
+import { withMysqlCancel } from './mysql-cancel.mjs';
 
 const parser = new sqlParser.Parser();
 const q = name => `\`${name.replaceAll('`', '``')}\``;
@@ -81,32 +82,48 @@ export class MysqlAdapter {
     return { name: table, sql, columns };
   }
   async schema(table) { return this.using(async c => table ? { tables: [await this.describe(c, table)] } : { tables: await this.tables(c) }); }
-  bounded(c, sql, values = []) {
+  bounded(c, sql, values = [], signal) {
     return new Promise((resolve, reject) => {
       const rows = []; let columns = []; let bytes = 0; let done = false;
-      const timer = setTimeout(() => finish(new ChangeError('QUERY_TIMEOUT')), 2200);
+      const onAbort = () => finish(new ChangeError('QUERY_CANCELLED'));
+      const timer = setTimeout(() => finish(new ChangeError(signal?.aborted ? 'QUERY_CANCELLED' : 'QUERY_TIMEOUT')), 2200);
       function finish(error, truncated = false) {
         if (done) return; done = true; clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         if (error || truncated) c.destroy();
         if (error) reject(error); else resolve({ columns, rows, truncated });
       }
+      if (signal?.aborted) { finish(new ChangeError('QUERY_CANCELLED')); return; }
+      signal?.addEventListener('abort', onAbort, { once: true });
       const query = c.query({ sql, values, timeout: 2000 });
       query.on('fields', fields => { columns = fields.map(f => f.name); if (new Set(columns).size !== columns.length) finish(new ChangeError('COLUMN_ALIASES_REQUIRED')); });
       query.on('result', row => {
         if (done) return;
+        if (signal?.aborted) { finish(new ChangeError('QUERY_CANCELLED')); return; }
         if(Object.values(row).some(value=>(typeof value==='string'&&value.length>2097152)||(Buffer.isBuffer(value)&&value.length>2097152))) {finish(null,true);return;}
         bytes += Buffer.byteLength(JSON.stringify(row));
         if (rows.length >= 1000 || bytes > 2097152) finish(null, true); else rows.push({ ...row });
       });
-      query.on('error', error => finish(new ChangeError(['ER_QUERY_TIMEOUT','PROTOCOL_SEQUENCE_TIMEOUT'].includes(error.code)?'QUERY_TIMEOUT':'QUERY_FAILED')));
-      query.on('end', () => finish(null));
+      query.on('error', error => finish(new ChangeError(signal?.aborted ? 'QUERY_CANCELLED' : ['ER_QUERY_TIMEOUT','PROTOCOL_SEQUENCE_TIMEOUT'].includes(error.code)?'QUERY_TIMEOUT':'QUERY_FAILED')));
+      query.on('end', () => finish(signal?.aborted ? new ChangeError('QUERY_CANCELLED') : null));
     });
   }
-  async query(sql) {
+  async query(sql, options = {}) {
     return this.using(async c => {
+      const [idRows] = await c.promise().query('SELECT CONNECTION_ID() AS id');
+      const threadId = Number(idRows[0]?.id);
+      requireValue(Number.isInteger(threadId) && threadId > 0, 'QUERY_FAILED');
       const canonical = readSql(sql, this.config.database, (await this.tables(c)).map(t => t.name));
-      await c.promise().query('START TRANSACTION READ ONLY');
-      return this.bounded(c, `SELECT * FROM (${canonical}) AS tongyun_result LIMIT 1001`);
+      return withMysqlCancel({
+        connect: () => this.connect(),
+        threadId,
+        signal: options.signal,
+        run: async () => {
+          if (options.signal?.aborted) throw new ChangeError('QUERY_CANCELLED');
+          await c.promise().query('START TRANSACTION READ ONLY');
+          return this.bounded(c, `SELECT * FROM (${canonical}) AS tongyun_result LIMIT 1001`, [], options.signal);
+        },
+      });
     });
   }
   async browse(table, after) {

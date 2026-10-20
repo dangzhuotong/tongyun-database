@@ -7,6 +7,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { ChangeControl, privateJson, ChangeError } from './change-control/core.mjs';
 import { ConnectionStore } from './connections/store.mjs';
 import { RemoteService } from './connections/service.mjs';
+import { beginQuery, finishQuery, normalizeQueryId, prepareCancel } from './queries/registry.mjs';
+
+async function runCancellable(body, context, fn) {
+  const begun = beginQuery(normalizeQueryId(body?.queryId), { connectionId: context.connectionId, taskId: context.taskId, environment: context.environment });
+  try {
+    const value = await fn(begun.controller.signal, begun.queryId);
+    if (begun.controller.signal.aborted) return { queryId: begun.queryId, status: 'cancelled' };
+    return { ...value, queryId: begun.queryId, status: 'completed' };
+  } catch (error) {
+    if (error instanceof ChangeError && error.code === 'QUERY_CANCELLED') return { queryId: begun.queryId, status: 'cancelled' };
+    throw error;
+  } finally { finishQuery(begun.queryId); }
+}
 
 export function createWorkbench({ filename, token }) {
   const baseContext = { actor: 'human:local', taskId: 'local-demo', connectionId: 'local-sqlite', environment: 'sandbox' };
@@ -22,7 +35,7 @@ export function createWorkbench({ filename, token }) {
     let url;
     try { url = new URL(req.url, origin); } catch { return reply(400,{ok:false,error:'INVALID_URL'}); }
     if (!url.pathname.startsWith('/api/')) {
-      const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/tokens.css': ['tokens.css', 'text/css'] };
+      const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/result-table.js': ['result-table.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/tokens.css': ['tokens.css', 'text/css'] };
       const target = files[url.pathname];
       if (req.method !== 'GET' || !target) return reply(404, { ok: false, error: 'NOT_FOUND' });
       let content = readFileSync(join(publicDir, target[0]), 'utf8');
@@ -59,9 +72,16 @@ export function createWorkbench({ filename, token }) {
       else if (route === 'GET /api/schema') result = remote ? await remote.schema(url.searchParams.get('table') ?? undefined) : control.tables();
       else if (route === 'GET /api/plans') result = remote ? await remote.list() : control.plans();
       else if (route === 'GET /api/audit') result = control.events(url.searchParams.get('before') ?? undefined);
-      else if (route === 'POST /api/query') result = remote ? await remote.query(body.sql) : await control.query(body.sql);
+      else if (route === 'POST /api/query') result = await runCancellable(body, context, (signal, queryId) => remote ? remote.query(body.sql, { signal, queryId }) : control.query(body.sql, [], { signal, queryId }));
+      else if (/^POST \/api\/queries\/[^/]+\/cancel$/.test(route)) {
+        const queryId = decodeURIComponent(url.pathname.split('/')[3]);
+        const pending = prepareCancel(queryId, { connectionId: context.connectionId, taskId: context.taskId, environment: context.environment });
+        control.noteQueryCancel(pending.queryId);
+        pending.apply();
+        result = { queryId: pending.queryId, status: 'cancelled' };
+      }
       else if (route === 'POST /api/browse') result = remote ? await remote.browse(body.table, body.after) : await control.browse(body.table, body.after);
-      else if (route === 'POST /api/redis/scan' && remote) result = await remote.scan(body);
+      else if (route === 'POST /api/redis/scan' && remote) result = await runCancellable(body, context, signal => remote.scan(body, { signal }));
       else if (route === 'POST /api/redis/read' && remote) result = await remote.readKey(body.key);
       else if (route === 'POST /api/plans') result = remote ? await remote.prepare(body) : control.prepareUpdate(body);
       else if (/^GET \/api\/plans\/[^/]+$/.test(route)) result = remote ? await remote.inspect(url.pathname.split('/')[3]) : control.inspect(url.pathname.split('/')[3]);

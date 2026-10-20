@@ -1,8 +1,73 @@
+import { applyResultView, displayCell as display } from './result-table.js';
 const $ = selector => document.querySelector(selector);
 const token = $('meta[name="tongyun-session"]').content;
 const state = { tables: [], table: 'customers', rows: [], columns: [], selected: null, plan: null, cursor: null, browse: true,
-  connection:{id:'local-sqlite',engine:'sqlite',allowWrites:true}, connections:[], redisKey:null };
-const display = value => value === null ? 'NULL' : value && typeof value === 'object' && '$integer' in value ? value.$integer : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  connection:{id:'local-sqlite',engine:'sqlite',allowWrites:true}, connections:[], redisKey:null, queryTabs: [], activeTabId: null, tabsByConnection: {} };
+const TABS_KEY = 'tongyun-query-tabs';
+function createTab(n, sql = '') {
+  return { id: crypto.randomUUID(), title: `查询 ${n}`, sql, rows: [], columns: [], browse: true, cursor: null, running: false, queryId: null, filter: '', sortColumn: null, sortDirection: 'asc', truncated: false, elapsed: null, error: '' };
+}
+function readTabStore() {
+  try { const parsed = JSON.parse(localStorage.getItem(TABS_KEY) || '{}'); return parsed && typeof parsed === 'object' ? parsed : {}; }
+  catch { return {}; }
+}
+function activeTab() { return state.queryTabs.find(tab => tab.id === state.activeTabId) ?? null; }
+function viewOf(tab) { return tab ? applyResultView(tab.rows, tab.columns, tab) : []; }
+function persistTabs() {
+  if (!state.connection?.id || !state.queryTabs.length) return;
+  const store = readTabStore();
+  store[state.connection.id] = { activeId: state.activeTabId, tabs: state.queryTabs.map(tab => ({ id: tab.id, title: tab.title, sql: tab.sql })) };
+  localStorage.setItem(TABS_KEY, JSON.stringify(store));
+}
+function bindTabs(connectionId) {
+  if (!state.tabsByConnection[connectionId]) {
+    const saved = readTabStore()[connectionId];
+    const savedTabs = Array.isArray(saved?.tabs) ? saved.tabs.filter(tab => tab && typeof tab.id === 'string' && typeof tab.sql === 'string') : [];
+    if (savedTabs.length) {
+      const tabs = savedTabs.map((tab, index) => ({ ...createTab(index + 1, tab.sql), id: tab.id, title: typeof tab.title === 'string' && tab.title.trim() ? tab.title.slice(0, 40) : `查询 ${index + 1}` }));
+      state.tabsByConnection[connectionId] = { activeId: tabs.some(tab => tab.id === saved.activeId) ? saved.activeId : tabs[0].id, tabs };
+    } else {
+      const tab = createTab(1, '');
+      state.tabsByConnection[connectionId] = { activeId: tab.id, tabs: [tab] };
+    }
+  }
+  const pack = state.tabsByConnection[connectionId];
+  state.queryTabs = pack.tabs;
+  state.activeTabId = pack.activeId;
+}
+function updateRunButtons() {
+  const running = Boolean(activeTab()?.running);
+  $('#run').disabled = running || state.connection.engine === 'redis';
+  $('#cancel').disabled = !running;
+  const scan = $('#redis-controls button[type="submit"]');
+  if (scan) scan.disabled = running;
+}
+function captureEditor() {
+  const tab = activeTab();
+  if (!tab) return;
+  tab.sql = $('#sql').value;
+  tab.filter = $('#result-filter').value;
+}
+function renderQueryTabs() {
+  const bar = $('#query-tabs');
+  if (!bar) return;
+  const nodes = state.queryTabs.map(tab => {
+    const wrap = el('div', undefined, tab.running ? 'query-tab running' : 'query-tab');
+    const button = el('button', tab.running ? `${tab.title} · 运行中` : tab.title);
+    button.type = 'button'; button.role = 'tab'; button.id = `query-tab-${tab.id}`;
+    button.setAttribute('aria-selected', String(tab.id === state.activeTabId));
+    button.onclick = () => switchQueryTab(tab.id);
+    const close = el('button', '×', 'tab-close');
+    close.type = 'button'; close.setAttribute('aria-label', `关闭${tab.title}`);
+    close.onclick = event => { event.stopPropagation(); closeQueryTab(tab.id); };
+    wrap.append(button, close);
+    return wrap;
+  });
+  const add = el('button', '＋ 新建', 'query-tab-add');
+  add.type = 'button'; add.setAttribute('aria-label', '新建查询标签');
+  add.onclick = () => newQueryTab();
+  bar.replaceChildren(...nodes, add);
+}
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 const errors = { ROW_CONFLICT: '数据已发生变化，请重新查询并生成计划。', APPROVAL_REQUIRED: '确认信息与当前计划不一致，请重新审查。', QUERY_REJECTED: '查询被拒绝。仅支持普通数据表的单条只读 SELECT，部分函数暂不支持。', QUERY_TIMEOUT: '查询超过 2 秒已停止，请缩小范围或优化索引。', NO_CHANGE: '新旧值相同，无需变更。', DATABASE_ERROR: '数据库拒绝此操作，请检查字段类型与约束。', CONTEXT_MISMATCH: '此计划不属于当前任务或环境。', INVALID_CHANGE: '请使用实际存在的非主键字段，以及字符串、数值或 NULL。' };
 async function api(path, body) {
@@ -48,49 +113,130 @@ async function selectRow(row) {
   renderRows();
 }
 const rowHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--db-row-height'));
+const redisColumnLabel = { key: 'Key', type: '类型', ttlMs: 'TTL / 秒', memoryBytes: '内存 / B' };
+function columnLabel(name) { return state.connection.engine === 'redis' ? redisColumnLabel[name] ?? name : name; }
+function paintCounts(tab) {
+  const unit = state.connection.engine === 'redis' ? '个 Key' : '行';
+  const shown = viewOf(tab);
+  $('#row-count').textContent = tab.rows.length ? (tab.filter.trim() ? `${shown.length}/${tab.rows.length} ${unit}` : `${tab.rows.length} ${unit}`) : '—';
+}
 function renderRows() {
+  const tab = activeTab();
   const container = $('#result');
-  if (!state.rows.length) { container.replaceChildren(el('div', '没有符合条件的数据', 'empty')); return; }
+  if (!tab) return;
+  const rows = viewOf(tab);
+  state.rows = tab.rows; state.columns = tab.columns;
+  if (!tab.rows.length) { container.replaceChildren(el('div', '执行查询或从表浏览中查看数据', 'empty')); return; }
+  if (!rows.length) { container.replaceChildren(el('div', '没有符合筛选条件的数据', 'empty')); return; }
   let table = container.querySelector('table');
-  if (!table) {
-    table = el('table'); const head = el('thead'); const tr = el('tr');
+  const headerKey = `${tab.columns.join('\0')}|${tab.sortColumn ?? ''}|${tab.sortDirection}|${state.connection.engine}`;
+  if (!table || table.dataset.header !== headerKey) {
+    table = el('table'); table.dataset.header = headerKey;
+    const head = el('thead'); const tr = el('tr');
     tr.append(el('th', '#', 'row-number'));
-    state.columns.forEach(c => tr.append(el('th', state.connection.engine==='redis'?({key:'Key',type:'类型',ttlMs:'TTL / 秒',memoryBytes:'内存 / B'}[c]??c):c)));
+    tab.columns.forEach(name => {
+      const th = el('th', undefined, 'sortable');
+      th.scope = 'col'; th.tabIndex = 0;
+      th.setAttribute('aria-sort', tab.sortColumn === name ? (tab.sortDirection === 'asc' ? 'ascending' : 'descending') : 'none');
+      th.append(document.createTextNode(columnLabel(name)));
+      if (tab.sortColumn === name) th.append(el('span', tab.sortDirection === 'asc' ? ' ↑' : ' ↓', 'sort-mark'));
+      const sort = () => {
+        if (tab.sortColumn === name) tab.sortDirection = tab.sortDirection === 'asc' ? 'desc' : 'asc';
+        else { tab.sortColumn = name; tab.sortDirection = 'asc'; }
+        container.scrollTop = 0; renderRows();
+      };
+      th.onclick = sort;
+      th.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); sort(); } };
+      tr.append(th);
+    });
     head.append(tr); table.append(head, el('tbody')); container.replaceChildren(table);
   }
   const body = table.querySelector('tbody');
   const start = Math.max(0, Math.floor(container.scrollTop / rowHeight) - 5);
-  const end = Math.min(state.rows.length, start + Math.ceil(container.clientHeight / rowHeight) + 12);
+  const end = Math.min(rows.length, start + Math.ceil(container.clientHeight / rowHeight) + 12);
   const fragment = document.createDocumentFragment();
-  function spacer(height) { if (!height) return; const tr = el('tr'); tr.className = 'spacer'; const td = el('td'); td.colSpan = state.columns.length + 1; td.style.height = `${height}px`; tr.append(td); fragment.append(tr); }
+  function spacer(height) { if (!height) return; const tr = el('tr'); tr.className = 'spacer'; const td = el('td'); td.colSpan = tab.columns.length + 1; td.style.height = `${height}px`; tr.append(td); fragment.append(tr); }
   spacer(start * rowHeight);
-  state.rows.slice(start, end).forEach((row, offset) => {
+  rows.slice(start, end).forEach((row, offset) => {
     const tr = el('tr'); tr.className = state.selected === row ? 'selected-row' : '';
     tr.append(el('td', String(start + offset + 1), 'row-number'));
-    state.columns.forEach(c => { const value=state.connection.engine==='redis'&&c==='ttlMs'?(row[c]===-1?'永久':row[c]===-2?'已过期':Math.ceil(row[c]/1000)):display(row[c]); const td = el('td', value); if (row[c] === null) td.className = 'null-value'; td.title = String(value); tr.append(td); });
-    if (state.browse) { tr.tabIndex = 0; tr.setAttribute('aria-label', `选择第 ${start + offset + 1} 行`); tr.onclick = () => selectRow(row).catch(e=>toast(e.message)); tr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectRow(row).catch(e=>toast(e.message)); } }; }
+    tab.columns.forEach(c => { const value=state.connection.engine==='redis'&&c==='ttlMs'?(row[c]===-1?'永久':row[c]===-2?'已过期':Math.ceil(row[c]/1000)):display(row[c]); const td = el('td', value); if (row[c] === null) td.className = 'null-value'; td.title = String(value); tr.append(td); });
+    if (tab.browse) { tr.tabIndex = 0; tr.setAttribute('aria-label', `选择第 ${start + offset + 1} 行`); tr.onclick = () => selectRow(row).catch(e=>toast(e.message)); tr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectRow(row).catch(e=>toast(e.message)); } }; }
     fragment.append(tr);
   });
-  spacer((state.rows.length - end) * rowHeight);
+  spacer((rows.length - end) * rowHeight);
   body.replaceChildren(fragment);
+}
+function switchQueryTab(id) {
+  if (id === state.activeTabId) return;
+  captureEditor(); persistTabs();
+  state.activeTabId = id;
+  state.tabsByConnection[state.connection.id].activeId = id;
+  persistTabs(); renderQueryTabs(); paintTab(activeTab());
+}
+function newQueryTab() {
+  captureEditor();
+  const pack = state.tabsByConnection[state.connection.id];
+  const tab = createTab(pack.tabs.length + 1, '');
+  pack.tabs.push(tab); pack.activeId = tab.id;
+  state.queryTabs = pack.tabs; state.activeTabId = tab.id;
+  persistTabs(); renderQueryTabs(); paintTab(tab);
+  if (state.connection.engine !== 'redis') setDefaultSql();
+}
+function closeQueryTab(id) {
+  const pack = state.tabsByConnection[state.connection.id];
+  const tab = pack.tabs.find(item => item.id === id);
+  if (!tab) return;
+  if (tab.running && tab.queryId) api(`queries/${tab.queryId}/cancel`, {}).catch(() => {});
+  tab.running = false;
+  if (activeTab()?.id === id) captureEditor();
+  pack.tabs = pack.tabs.filter(item => item.id !== id);
+  if (!pack.tabs.length) pack.tabs.push(createTab(1, ''));
+  if (!pack.tabs.some(item => item.id === pack.activeId)) pack.activeId = pack.tabs[0].id;
+  state.queryTabs = pack.tabs; state.activeTabId = pack.activeId;
+  persistTabs(); renderQueryTabs(); paintTab(activeTab());
+  if (activeTab() && !activeTab().sql.trim() && state.connection.engine !== 'redis') setDefaultSql();
+}
+function paintTab(tab) {
+  if (!tab) return;
+  state.rows = tab.rows; state.columns = tab.columns; state.browse = tab.browse; state.cursor = tab.cursor;
+  $('#sql').value = tab.sql; $('#result-filter').value = tab.filter;
+  $('#query-error').textContent = tab.error || ''; $('#query-error').hidden = !tab.error;
+  $('#next-page').disabled = !tab.cursor;
+  paintCounts(tab);
+  if (tab.elapsed != null) $('#query-time').textContent = `${Math.round(tab.elapsed)} ms · ${state.connection.engine === 'redis' ? 'SCAN 分批扫描' : tab.browse ? '主键游标分页' : '只读 SQL'}`;
+  $('#result-note').textContent = state.connection.engine === 'redis' ? 'SCAN 弱一致性遍历 · 单页最多 1000 个 Key' : tab.truncated ? '结果已截断 · 最多 1000 行 / 2 MiB' : '当前页加载完成 · 无全表计数';
+  clearSelection(); $('#result').replaceChildren(); $('#result').scrollTop = 0; renderRows(); updateRunButtons();
 }
 $('#result').addEventListener('scroll', () => requestAnimationFrame(renderRows));
 new ResizeObserver(() => renderRows()).observe($('#result'));
-function showResult(data, elapsed) {
-  state.rows = data.rows; state.columns = data.columns; state.cursor = data.nextCursor ?? null;
-  $('#row-count').textContent = `${data.rows.length} ${state.connection.engine==='redis'?'个 Key':'行'}`;
-  $('#query-time').textContent = `${Math.round(elapsed)} ms · ${state.connection.engine==='redis'?'SCAN 分批扫描':state.browse ? '主键游标分页' : '只读 SQL'}`;
+function showResult(tab, data, elapsed) {
+  tab.rows = data.rows ?? []; tab.columns = data.columns ?? []; tab.cursor = data.nextCursor ?? null;
+  tab.truncated = Boolean(data.truncated); tab.elapsed = elapsed; tab.error = ''; tab.filter = ''; tab.sortColumn = null; tab.sortDirection = 'asc';
+  if (activeTab() !== tab) return;
+  state.rows = tab.rows; state.columns = tab.columns; state.browse = tab.browse; state.cursor = tab.cursor;
+  $('#result-filter').value = '';
+  paintCounts(tab);
+  $('#query-time').textContent = `${Math.round(elapsed)} ms · ${state.connection.engine==='redis'?'SCAN 分批扫描':tab.browse ? '主键游标分页' : '只读 SQL'}`;
   $('#result-note').textContent = state.connection.engine==='redis' ? 'SCAN 弱一致性遍历 · 单页最多 1000 个 Key' : data.truncated ? '结果已截断 · 最多 1000 行 / 2 MiB' : '当前页加载完成 · 无全表计数';
-  $('#next-page').disabled = !state.cursor;
+  $('#next-page').disabled = !tab.cursor;
   clearSelection(); $('#result').replaceChildren(); $('#result').scrollTop = 0; renderRows();
 }
 async function browse(after) {
-  const connectionId=state.connection.id;const table=state.table;
+  const tab = activeTab();
+  const connectionId=state.connection.id;const table=state.table;const redis=state.connection.engine==='redis';
   const start=performance.now(); let data;
-  if(state.connection.engine==='redis') data=await api('redis/scan',{cursor:after??'0',pattern:$('#key-pattern').value||'*'});
-  else { await ensureTable(); if(state.table!==table||state.connection.id!==connectionId)return;data=await api('browse',{table,...(after===undefined?{}:{after})}); }
-  if(state.connection.id!==connectionId||state.table!==table)return;
-  state.browse=true; showResult(data,performance.now()-start);
+  if (redis) { tab.running = true; tab.queryId = crypto.randomUUID(); tab.error = ''; updateRunButtons(); renderQueryTabs(); }
+  try {
+    if(redis) data=await api('redis/scan',{cursor:after??'0',pattern:$('#key-pattern').value||'*',queryId:tab.queryId});
+    else { await ensureTable(); if(state.table!==table||state.connection.id!==connectionId)return;data=await api('browse',{table,...(after===undefined?{}:{after})}); }
+    if(state.connection.id!==connectionId||(!redis&&state.table!==table))return;
+    if (data.status === 'cancelled') { tab.error = '查询已取消。'; if (activeTab()===tab) { $('#query-error').textContent = tab.error; $('#query-error').hidden = false; } return; }
+    tab.browse=true; showResult(tab, data, performance.now()-start);
+  } catch (error) {
+    if (tab) tab.error = error.message;
+    if (activeTab()===tab && state.connection.id===connectionId) { $('#query-error').textContent = error.message; $('#query-error').hidden = false; toast(error.message); }
+  } finally { if (redis && tab) { tab.running = false; tab.queryId = null; updateRunButtons(); renderQueryTabs(); } }
 }
 async function ensureTable() {
   const table=state.tables.find(t=>t.name===state.table);
@@ -107,7 +253,7 @@ async function schema() {
     const button = el('button', `▦　${table.name}`, table.name === state.table ? 'table-button selected' : 'table-button');
     button.onclick = () => action(button, $('#query-error'), async () => {
       state.table = table.name; $('#breadcrumb').textContent = table.name;
-      await ensureTable(); if(state.table!==table.name)return;setDefaultSql();
+      await ensureTable(); if(state.table!==table.name)return;setDefaultSql(true);
       await browse();if(state.table!==table.name)return;renderStructure(); $('#tables').querySelectorAll('button').forEach(b => b.classList.toggle('selected', b === button));
     }); return button;
   })); renderStructure();
@@ -136,7 +282,7 @@ async function plans() {
   const data = await api('plans');
   $('#plans').replaceChildren(...(data.plans.length ? data.plans.map(p => { const button = el('button', undefined, 'plan-item'); button.append(el('span', `${p.table} · ${stateLabel[p.state]}`), el('code', `${p.actor} / ${p.id.slice(0, 8)}`)); button.onclick = () => action(button, $('#change-error'), () => openPlan(p.id)); return button; }) : [el('div', '暂无变更计划。AI 与人在当前任务中创建的计划会显示在这里。', 'empty compact')]));
 }
-const actions = { discover: '发现能力', read_schema: '读取表结构', prepare_browse: '准备分页', query: '执行查询', prepare_update: '准备更新', inspect_plan: '审查计划', apply: '执行变更', rollback: '执行回滚', approve_apply: '确认执行', approve_rollback: '确认回滚', cancel_confirmation: '取消确认', inspect_query: '查看原始查询', list_plans: '读取计划', read_audit: '读取记录' };
+const actions = { discover: '发现能力', read_schema: '读取表结构', prepare_browse: '准备分页', query: '执行查询', prepare_update: '准备更新', inspect_plan: '审查计划', apply: '执行变更', rollback: '执行回滚', approve_apply: '确认执行', approve_rollback: '确认回滚', cancel_confirmation: '取消确认', cancel_query: '取消查询', inspect_query: '查看原始查询', list_plans: '读取计划', read_audit: '读取记录' };
 Object.assign(actions,{redis_scan:'扫描 Key',redis_read:'读取 Key',browse:'读取数据页',test_connection:'测试连接',list_connections:'读取连接',add_connection:'保存连接',remote_result:'记录远程结果',inspect_operation:'查看操作参数'});
 let auditCursor = null;
 let viewingOlderAudit = false;
@@ -145,12 +291,47 @@ async function audit(before) {
   viewingOlderAudit = Boolean(before); auditCursor = data.nextBefore; $('#older-audit').disabled = !auditCursor;
   const events = data.events.filter(e => e.taskId === ($('#task').value.trim() || 'local-demo') && e.connectionId===state.connection.id && !['read_audit', 'list_plans'].includes(e.action)).reverse();
   $('#event-count').textContent = events.length;
-  $('#timeline').replaceChildren(...events.map(event => { const row = el('div', undefined, `event ${event.outcome}`); const copy = el('div'); const outcome = {started:'开始',succeeded:'完成',failed:'失败',recorded:'已确认'}[event.outcome] ?? event.outcome; copy.append(el('div', `${actions[event.action] ?? event.action} · ${outcome}`), el('small', `${event.actor} · ${event.taskId}${event.code ? ` · ${event.code}` : ''}${event.planId ? ` · ${event.planId.slice(0, 8)}` : ''}`)); row.append(el('span', event.outcome === 'succeeded' ? '✓' : event.outcome === 'failed' ? '!' : '·', 'event-mark'), copy, el('span', new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false }), 'event-time'));
+  $('#timeline').replaceChildren(...events.map(event => { const row = el('div', undefined, `event ${event.outcome}`); const copy = el('div'); const outcome = {started:'开始',succeeded:'完成',failed:'失败',recorded:'已确认',cancelled:'已取消'}[event.outcome] ?? event.outcome; copy.append(el('div', `${actions[event.action] ?? event.action} · ${outcome}`), el('small', `${event.actor} · ${event.taskId}${event.code ? ` · ${event.code}` : ''}${event.planId ? ` · ${event.planId.slice(0, 8)}` : ''}`)); row.append(el('span', event.outcome === 'succeeded' ? '✓' : event.outcome === 'failed' ? '!' : '·', 'event-mark'), copy, el('span', new Date(event.at).toLocaleTimeString('zh-CN', { hour12: false }), 'event-time'));
     if (event.action === 'query' && event.outcome === 'succeeded') { const button = el('button', '查看 SQL'); button.onclick = () => action(button, $('#query-error'), async () => { const record = await api(`queries/${event.operationId}`); $('#query-dialog h2').textContent='私有查询记录'; $('#query-record').textContent = record.sql; $('#query-dialog').showModal(); }); row.append(button); }
     if(state.connection.engine!=='sqlite'&&event.outcome==='succeeded'&&['read_schema','browse','redis_scan','redis_read','prepare_update'].includes(event.action)) {const button=el('button','查看参数');button.onclick=()=>action(button,$('#query-error'),async()=>{const record=await api(`operations/${event.operationId}`);$('#query-dialog h2').textContent='私有操作参数';$('#query-record').textContent=JSON.stringify(record.request,null,2);$('#query-dialog').showModal();});row.append(button);}
     return row; }));
 }
-$('#run').onclick = () => action($('#run'), $('#query-error'), async () => { const start = performance.now(); const data = await api('query', { sql: $('#sql').value }); state.browse = false; showResult(data, performance.now() - start); await audit(); });
+$('#run').onclick = async () => {
+  const tab = activeTab();
+  if (!tab || tab.running || state.connection.engine === 'redis') return;
+  tab.sql = $('#sql').value; persistTabs();
+  tab.running = true; tab.queryId = crypto.randomUUID(); tab.error = '';
+  $('#query-error').hidden = true; $('#status').textContent = '查询进行中…';
+  updateRunButtons(); renderQueryTabs();
+  const connectionId = state.connection.id; const start = performance.now();
+  try {
+    const data = await api('query', { sql: tab.sql, queryId: tab.queryId });
+    if (state.connection.id !== connectionId) return;
+    if (data.status === 'cancelled') {
+      tab.error = '查询已取消。';
+      if (activeTab() === tab) { $('#query-error').textContent = tab.error; $('#query-error').hidden = false; $('#status').textContent = '查询已取消'; }
+      return;
+    }
+    tab.browse = false; showResult(tab, data, performance.now() - start);
+    $('#status').textContent = '操作完成 · 已记录';
+    await audit();
+  } catch (error) {
+    tab.error = error.message;
+    if (activeTab() === tab && state.connection.id === connectionId) { $('#query-error').textContent = error.message; $('#query-error').hidden = false; $('#status').textContent = '操作失败 · 请查看说明'; toast(error.message); }
+  } finally { tab.running = false; tab.queryId = null; updateRunButtons(); renderQueryTabs(); }
+};
+$('#cancel').onclick = async () => {
+  const tab = activeTab();
+  if (!tab?.running || !tab.queryId) return;
+  $('#cancel').disabled = true;
+  try { await api(`queries/${tab.queryId}/cancel`, {}); $('#status').textContent = '正在取消查询…'; }
+  catch (error) { $('#query-error').textContent = error.message; $('#query-error').hidden = false; toast(error.message); updateRunButtons(); }
+};
+$('#sql').addEventListener('input', () => { const tab = activeTab(); if (!tab) return; tab.sql = $('#sql').value; persistTabs(); });
+$('#result-filter').addEventListener('input', () => {
+  const tab = activeTab(); if (!tab) return;
+  tab.filter = $('#result-filter').value; $('#result').scrollTop = 0; paintCounts(tab); renderRows();
+});
 $('#sql').onkeydown = e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); $('#run').click(); } };
 $('#first-page').onclick = () => action($('#first-page'), $('#query-error'), () => browse());
 $('#next-page').onclick = () => action($('#next-page'), $('#query-error'), () => browse(state.cursor));
@@ -185,13 +366,16 @@ $('#refresh-schema').onclick = () => action($('#refresh-schema'), $('#query-erro
 $('#refresh-plans').onclick = () => plans().catch(e => toast(e.message));
 $('#refresh-audit').onclick = () => audit().catch(e => toast(e.message));
 $('#older-audit').onclick = () => audit(auditCursor).catch(e => toast(e.message));
-$('#agent-open').onclick = () => { $('#agent-doc').textContent = `${location.origin}\n\nGET  /api/connections\nPOST /api/connections/:id/test\nGET  /api/capabilities\nGET  /api/schema\nPOST /api/query       { sql }\nPOST /api/browse      { table, after? }\nPOST /api/redis/scan  { pattern, cursor? }\nPOST /api/redis/read  { key }\nPOST /api/plans       { table, key, changes }\nGET  /api/plans/:id\nPOST /api/plans/:id/apply\nPOST /api/plans/:id/rollback\nGET  /api/audit\n\nAuthorization: Bearer <本机令牌>\nX-Tongyun-Connection: ${state.connection.id}\nX-Tongyun-Actor: agent:your-agent\nX-Tongyun-Task: local-demo\n\n执行 / 回滚请求：{ approvedDigest }`; $('#agent-dialog').showModal(); };
+$('#agent-open').onclick = () => { $('#agent-doc').textContent = `${location.origin}\n\nGET  /api/connections\nPOST /api/connections/:id/test\nGET  /api/capabilities\nGET  /api/schema\nPOST /api/query       { sql, queryId? }\nPOST /api/queries/:queryId/cancel\nPOST /api/browse      { table, after? }\nPOST /api/redis/scan  { pattern, cursor?, queryId? }\nPOST /api/redis/read  { key }\nPOST /api/plans       { table, key, changes }\nGET  /api/plans/:id\nPOST /api/plans/:id/apply\nPOST /api/plans/:id/rollback\nGET  /api/audit\n\nAuthorization: Bearer <本机令牌>\nX-Tongyun-Connection: ${state.connection.id}\nX-Tongyun-Actor: agent:your-agent\nX-Tongyun-Task: local-demo\n\n执行 / 回滚请求：{ approvedDigest }`; $('#agent-dialog').showModal(); };
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', e => { if (e.target === dialog) { const r = dialog.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close(); } }));
-function setDefaultSql() {
+function setDefaultSql(force = false) {
   const table=state.tables.find(t=>t.name===state.table); if(!table) return;
+  const tab = activeTab();
+  if (!force && tab?.sql.trim()) { $('#sql').value = tab.sql; return; }
   const quote=state.connection.engine==='mysql'?name=>`\`${name.replaceAll('`','``')}\``:name=>`"${name.replaceAll('"','""')}"`;
   const key=table.columns.find(c=>c.pk)?.name;
   $('#sql').value=`SELECT *\nFROM ${quote(table.name)}${key?`\nORDER BY ${quote(key)}`:''}\nLIMIT 1000;`;
+  if (tab) { tab.sql = $('#sql').value; persistTabs(); }
 }
 function redisActions(data) {
   $('#redis-action').disabled=false;
@@ -212,6 +396,7 @@ async function loadConnections() {
 async function selectConnection(id) {
   const connection=state.connections.find(c=>c.id===id); if(!connection) return;
   state.connection=connection; state.table='';state.tables=[];state.rows=[];state.columns=[];state.cursor=null;
+  bindTabs(connection.id); renderQueryTabs();
   $('#connection-select').value=id;localStorage.setItem('tongyun-connection',id);
   clearSelection();$('#result').replaceChildren(el('div','正在读取连接…','empty'));$('#tables').replaceChildren();$('#structure').replaceChildren();$('#plans').replaceChildren();$('#row-count').textContent='—';$('#query-error').hidden=true;$('#change-error').hidden=true;
   const redis=connection.engine==='redis';
@@ -226,7 +411,10 @@ async function selectConnection(id) {
   $('#forward-label').textContent=redis?'执行命令':'执行 SQL';$('#rollback-label').textContent=redis?'恢复命令':'回滚 SQL';
   $('#redis-action').hidden=!redis;$('#redis-action-label').hidden=!redis;$('#redis-controls').hidden=!redis;
   $('#changes').value='{}';$('#redis-action').replaceChildren(el('option','请先选择 Key'));$('#redis-action').disabled=true;
-  ['.editor-heading','.editor','.query-actions'].forEach(selector=>$(selector).hidden=redis);
+  ['.editor-heading','.editor'].forEach(selector=>$(selector).hidden=redis);
+  $('#query-tabs').hidden=redis;
+  $('#run').hidden=redis;
+  document.querySelector('.query-actions .muted').hidden=redis;
   document.querySelector('[data-view="query"]').textContent=redis?'Key 浏览器':'查询与数据';
   document.querySelector('[data-view="structure"]').hidden=redis;
   document.querySelector('[data-view="query"]').click();
@@ -236,7 +424,7 @@ async function selectConnection(id) {
   if(redis || state.table) { await browse(); if(!redis) setDefaultSql(); }
   else $('#result').replaceChildren(el('div','当前数据库中没有可浏览的数据表','empty'));
   $('#breadcrumb').textContent=redis?'Key 浏览器':state.table;
-  await plans();await audit();$('#status').textContent='连接已就绪';
+  await plans();await audit();updateRunButtons();$('#status').textContent='连接已就绪';
 }
 $('#connection-select').onchange=()=>{const id=$('#connection-select').value;selectConnection(id).catch(error=>{if(state.connection.id!==id)return;$('#query-error').textContent=error.message;$('#query-error').hidden=false;$('#result').replaceChildren(el('div','连接读取失败，请检查配置后重试。','empty'));toast(error.message);});};
 $('#connection-add').onclick=()=>{ $('#connection-error').hidden=true;$('#connection-dialog').showModal(); };
@@ -250,6 +438,6 @@ $('#connection-form').onsubmit=e=>{e.preventDefault();action($('#connection-save
 });};
 $('#connection-test').onclick=()=>action($('#connection-test'),$('#query-error'),async()=>{const result=await api(`connections/${state.connection.id}/test`,{});toast(`${result.engine.toUpperCase()} ${result.version} 连接成功`);});
 $('#redis-controls').onsubmit=e=>{e.preventDefault();const button=$('#redis-controls button');action(button,$('#query-error'),()=>browse());};
-Object.assign(errors,{HASH_FIELD_TTL_UNSUPPORTED:'此 Hash 存在字段级过期时间，当前版本不支持对此类 Key 执行可回滚变更。',BINARY_VALUE_UNSUPPORTED:'此 Key 含二进制值，当前内容面板仅支持 UTF-8 文本。',QUERY_BUSY:'当前并发操作已达上限，请稍后再试。',CONNECTION_FAILED:'连接失败，请检查主机、端口、账号与证书。',CONNECTION_READ_ONLY:'当前连接仅允许读取。',TRIGGER_VISIBILITY_REQUIRED:'变更账号需要具备目标表的 TRIGGER 元数据可见权限，才能检查回滚是否可靠。',KEY_TOO_LARGE:'此 Key 超过安全编辑上限（1 MiB 或 1000 个元素），请缩小处理范围。',ROLLBACK_EXPIRED:'原数据的过期时间已到，已拒绝恢复以避免复活过期 Key。',OUTCOME_UNKNOWN:'远程执行结果待核查，已禁止直接重试。请读取当前数据并对照计划快照。',REDIS_ERROR:'Redis 操作失败，请检查连接、版本和 ACL 权限。',REDIS_7_REQUIRED:'此面板需要 Redis 7 或更新版本。',CURSOR_EXPIRED:'分页游标已过期，请从首页重新扫描。',COLUMN_ALIASES_REQUIRED:'查询结果存在重名列，请为字段添加不同别名。',SINGLE_PRIMARY_KEY_REQUIRED:'自动浏览需要单列主键；此表请使用只读 SQL 查询。'});
+Object.assign(errors,{HASH_FIELD_TTL_UNSUPPORTED:'此 Hash 存在字段级过期时间，当前版本不支持对此类 Key 执行可回滚变更。',BINARY_VALUE_UNSUPPORTED:'此 Key 含二进制值，当前内容面板仅支持 UTF-8 文本。',QUERY_BUSY:'当前并发操作已达上限，请稍后再试。',QUERY_CANCELLED:'查询已取消。',QUERY_NOT_FOUND:'没有找到可取消的查询，或该查询不属于当前任务。',INVALID_QUERY_ID:'查询编号无效。',CONNECTION_FAILED:'连接失败，请检查主机、端口、账号与证书。',CONNECTION_READ_ONLY:'当前连接仅允许读取。',TRIGGER_VISIBILITY_REQUIRED:'变更账号需要具备目标表的 TRIGGER 元数据可见权限，才能检查回滚是否可靠。',KEY_TOO_LARGE:'此 Key 超过安全编辑上限（1 MiB 或 1000 个元素），请缩小处理范围。',ROLLBACK_EXPIRED:'原数据的过期时间已到，已拒绝恢复以避免复活过期 Key。',OUTCOME_UNKNOWN:'远程执行结果待核查，已禁止直接重试。请读取当前数据并对照计划快照。',REDIS_ERROR:'Redis 操作失败，请检查连接、版本和 ACL 权限。',REDIS_7_REQUIRED:'此面板需要 Redis 7 或更新版本。',CURSOR_EXPIRED:'分页游标已过期，请从首页重新扫描。',COLUMN_ALIASES_REQUIRED:'查询结果存在重名列，请为字段添加不同别名。',SINGLE_PRIMARY_KEY_REQUIRED:'自动浏览需要单列主键；此表请使用只读 SQL 查询。'});
 try { await loadConnections(); const saved=localStorage.getItem('tongyun-connection');await selectConnection(state.connections.some(c=>c.id===saved)?saved:'local-sqlite'); } catch (error) { $('#query-error').textContent = error.message; $('#query-error').hidden = false; }
 setInterval(() => { const id=state.connection.id;if (document.visibilityState === 'visible') Promise.all([plans(), ...(viewingOlderAudit ? [] : [audit()])]).catch(() => { if(state.connection.id===id)$('#status').textContent = '连接暂时不可用，请刷新'; }); }, 10000);

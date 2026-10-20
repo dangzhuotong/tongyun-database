@@ -247,10 +247,16 @@ export class ChangeControl {
     return { ...result, table, key: info.key, nextCursor: result.truncated && result.rows.length ? String(result.rows.at(-1)[info.key]) : null };
   }
 
-  async query(sql, parameters = []) {
-    const operationId = randomUUID();
+  noteQueryCancel(queryId) {
+    this.atomic(() => this.append({ action: 'cancel_query', operationId: queryId, outcome: 'succeeded' }));
+  }
+
+  async query(sql, parameters = [], options = {}) {
+    const signal = options?.signal;
+    const operationId = options?.queryId ?? randomUUID();
     this.atomic(() => this.append({ operationId, action: 'query', outcome: 'started', sqlDigest: hash(sql ?? null) }));
     try {
+      if (signal?.aborted) throw new ChangeError('QUERY_CANCELLED');
       demand(typeof sql === 'string' && sql.length > 0 && sql.length <= 20000, 'INVALID_QUERY');
       this.atomic(() => this.db.prepare('INSERT INTO _tongyun_queries VALUES (?, ?, ?, ?)').run(operationId, this.context.taskId, sql, encode(parameters)));
       demand(queryProcesses < 4, 'QUERY_BUSY');
@@ -264,22 +270,35 @@ export class ChangeControl {
         });
         let result;
         let timedOut = false;
+        let aborted = false;
+        let settled = false;
         const timer = setTimeout(() => { timedOut = true; worker.kill('SIGKILL'); }, 2000);
-        worker.once('message', message => { result = message; });
-        worker.once('error', () => { clearTimeout(timer); reject(new ChangeError('QUERY_FAILED')); });
-        worker.once('exit', code => {
+        const finish = (error, value) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
-          if (timedOut) reject(new ChangeError('QUERY_TIMEOUT'));
-          else if (code !== 0 || !result) reject(new ChangeError('QUERY_FAILED'));
-          else if (result.error) reject(new ChangeError(result.error));
-          else resolve(result);
+          signal?.removeEventListener('abort', onAbort);
+          if (error) reject(error); else resolve(value);
+        };
+        const onAbort = () => { aborted = true; worker.kill('SIGKILL'); };
+        worker.once('message', message => { result = message; });
+        worker.once('error', () => finish(new ChangeError('QUERY_FAILED')));
+        worker.once('exit', code => {
+          if (aborted || signal?.aborted) finish(new ChangeError('QUERY_CANCELLED'));
+          else if (timedOut) finish(new ChangeError('QUERY_TIMEOUT'));
+          else if (code !== 0 || !result) finish(new ChangeError('QUERY_FAILED'));
+          else if (result.error) finish(new ChangeError(result.error));
+          else finish(null, result);
         });
-        worker.send({ filename: this.filename, sql, parameters });
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+        if (!aborted) worker.send({ filename: this.filename, sql, parameters });
       }); } finally { queryProcesses--; }
       this.atomic(() => this.append({ operationId, action: 'query', outcome: 'succeeded', rowCount: result.rows.length, truncated: result.truncated }));
       return { operationId, ...result };
     } catch (error) {
-      this.atomic(() => this.append({ operationId, action: 'query', outcome: 'failed', code: error instanceof ChangeError ? error.code : 'QUERY_FAILED' }));
+      const code = error instanceof ChangeError ? error.code : 'QUERY_FAILED';
+      this.atomic(() => this.append({ operationId, action: 'query', outcome: code === 'QUERY_CANCELLED' ? 'cancelled' : 'failed', code }));
       throw error instanceof ChangeError ? error : new ChangeError('QUERY_FAILED');
     }
   }

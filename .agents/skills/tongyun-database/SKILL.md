@@ -103,7 +103,8 @@ X-Tongyun-Task: task-id
 | `POST /api/connections` | 新增 MySQL / Redis 连接 |
 | `GET /api/capabilities` | 当前连接支持的工具与限制 |
 | `GET /api/schema` | 表树；`?table=名称` 获取列元数据 |
-| `POST /api/query` | 受限只读 SELECT，最多 1000 行 / 2 MiB |
+| `POST /api/query` | 受限只读 SELECT，最多 1000 行 / 2 MiB；可带 `queryId`，响应含 `status` |
+| `POST /api/queries/:queryId/cancel` | 取消进行中的查询；MySQL 为 `KILL QUERY`，并写审计 |
 | `POST /api/browse` | 主键游标分页 |
 | `POST /api/redis/scan` | SCAN，最多 1000 Key |
 | `POST /api/redis/read` | 读单 Key 类型、值、TTL |
