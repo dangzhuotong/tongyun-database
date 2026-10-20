@@ -11,12 +11,15 @@
     "test": "node --test \"test/**/*.test.mjs\"",
     "check": "node scripts/check.mjs",
     "db": "node src/cli.mjs",
+    "mcp": "node src/mcp/server.mjs",
     "services:start": "node scripts/services.mjs start",
     "services:stop": "node scripts/services.mjs stop"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "mysql2": "^3.24.6",
     "node-sql-parser": "^5.4.0",
-    "redis": "^6.3.0"
+    "redis": "^6.3.0",
+    "zod": "^4.6.7"
   }
 }

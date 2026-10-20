@@ -9,6 +9,7 @@
 | 全部检查 | `npm run check` | 语法与真实 SQLite / HTTP 集成测试通过 |
 | 测试 | `npm test` | 只运行 `test/**/*.test.mjs`；临时合成数据库用例通过并清理。不扫描 `.claude/`、`docs/`、`node_modules` |
 | CLI 用法 | `npm run db -- --help` | 输出参数说明 |
+| MCP | `npm run mcp` | stdio MCP。需要 `TONGYUN_DB_URL` 与 `TONGYUN_DB_TOKEN`；写工具默认关闭 |
 | 百万行性能 | `node scripts/benchmark.mjs` | 临时生成 100 万行，输出三段分页耗时与索引执行计划后清理 |
 
 改代码后服务端需重启，浏览器需刷新。默认只自动创建 `.local/sandbox.sqlite` 合成数据；网络连接由 UI 添加，不读取其他项目配置或凭据。`.local/agent-token` 每次启动轮换，权限 0600；目录 0700。

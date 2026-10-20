@@ -55,4 +55,6 @@ SQLite：prepared → applied → rolled_back。MySQL/Redis：prepared → apply
 
 当前无连接编辑/删除 API、Redis Cluster、PostgreSQL/D1、桌面打包与内置模型调用。测试版本为 MySQL 8.4 与 Redis 7.4；TLS、生产 ACL、其他版本及长期负载未验证。
 
+stdio MCP（`npm run mcp`）是这套 HTTP API 的客户端，不是另一条写库通道。默认只暴露只读工具；`TONGYUN_DB_MCP_ALLOW_WRITES=1` 才注册计划创建、执行和回滚，执行与回滚仍要 `approvedDigest`。
+
 Redis Hash 字段级 TTL 暂不支持可回滚变更；普通 Key TTL 已支持。大 Key 超过内容查看/编辑上限时，仅 SCAN 元数据可用。
