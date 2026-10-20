@@ -1,13 +1,13 @@
 # 开发与命令
 
-环境：Node.js >=24.14.0，使用内置 node:sqlite；依赖 mysql2（MIT）、redis（MIT）、node-sql-parser（Apache-2.0）。命令在仓库根执行。
+环境：Node.js >= 24（`.nvmrc` 为 24；`package.json` 的 `engines.node` 为 `>=24.14.0`，使用内置 node:sqlite）。依赖 mysql2（MIT）、redis（MIT）、node-sql-parser（Apache-2.0）。命令在仓库根执行。
 
 | 目的 | 命令 | 成功条件 |
 | --- | --- | --- |
 | 依赖与锁文件 | `npm install --ignore-scripts` | 安装锁文件指定的依赖 |
 | 启动工作台 | `npm start` | 打印本地地址，默认 127.0.0.1:4319；可用 TONGYUN_DATABASE_PORT 改端口 |
 | 全部检查 | `npm run check` | 语法与真实 SQLite / HTTP 集成测试通过 |
-| 测试 | `npm test` | 临时合成数据库用例通过并清理 |
+| 测试 | `npm test` | 只运行 `test/**/*.test.mjs`；临时合成数据库用例通过并清理。不扫描 `.claude/`、`docs/`、`node_modules` |
 | CLI 用法 | `npm run db -- --help` | 输出参数说明 |
 | 百万行性能 | `node scripts/benchmark.mjs` | 临时生成 100 万行，输出三段分页耗时与索引执行计划后清理 |
 

@@ -6,4 +6,4 @@ for(const file of ['src','public','scripts','test'].flatMap(files)) {
   const result=spawnSync(process.execPath,['--check',file],{stdio:'inherit'});
   if(result.status!==0)process.exit(result.status??1);
 }
-const result=spawnSync(process.execPath,['--test'],{stdio:'inherit'});process.exit(result.status??1);
+const result=spawnSync(process.execPath,['--test','test/**/*.test.mjs'],{stdio:'inherit'});process.exit(result.status??1);
