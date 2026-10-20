@@ -21,11 +21,11 @@
 3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
 4. 应用启动后会自动在浏览器中打开工作台界面（`http://127.0.0.1:4319`）。数据文件存储于 `~/Library/Application Support/tongyun-database/`。
 
-> **前置要求**：本机需安装 **Node.js 24.14+**（[nodejs.org](https://nodejs.org)）。应用启动时会自动检测；若未找到，将弹窗提示下载链接。
+> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。应用启动时会自动检测；若未找到，将弹窗提示下载链接。
 
 ## 开始使用
 
-环境与唯一命令表见 [开发文档](docs/development.md)。当前为 Node.js 24.14+，运行依赖 mysql2、redis 和 node-sql-parser。启动后打开终端打印的本机地址，或读取 `.local/endpoint.json`。
+环境与唯一命令表见 [开发文档](docs/development.md)。需要 **Node.js >= 24**（`engines` 为 >=24.14.0），运行依赖 mysql2、redis 和 node-sql-parser。`npm test` 只运行 `test/` 下的测试。启动后打开终端打印的本机地址，或读取 `.local/endpoint.json`。
 
 Agent 接入协议见 [Agent API](docs/agent-api.md)，工作台内也有「查看 Agent 接入」。令牌只存 `.local/agent-token`，不打印到日志。
 

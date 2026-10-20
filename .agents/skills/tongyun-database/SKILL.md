@@ -49,7 +49,7 @@ npm run services:stop    # 仅删除本项目所有的容器，不影响其他�
 | --- | --- |
 | 启动工作台 | `npm start` |
 | 全部检查（语法 + 集成） | `npm run check` |
-| 运行测试 | `npm test` |
+| 运行测试 | `npm test`（只跑 `test/**/*.test.mjs`） |
 | SQLite CLI | `npm run db -- --help` |
 | 启动合成网络服务 | `npm run services:start` |
 | 停止合成网络服务 | `npm run services:stop` |
