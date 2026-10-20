@@ -14,6 +14,15 @@
 - 操作开始、成功、失败、确认和取消均进入本机审计。执行 SQL、变更快照、回滚参数存在本机私有表中，不进入 Git。
 - UI 和 Agent API 使用同一数据库、计划和事件；工作台定期刷新外部 Agent 创建的计划。
 
+## Mac 安装
+
+1. 前往 [Releases](../../releases) 页面，下载最新的 `tongyun-database-mac.zip`。
+2. 解压后将 **橦云数据库.app** 拖入 `/Applications`。
+3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
+4. 应用启动后会自动在浏览器中打开工作台界面（`http://127.0.0.1:4319`）。数据文件存储于 `~/Library/Application Support/tongyun-database/`。
+
+> **前置要求**：本机需安装 **Node.js 20+**（[nodejs.org](https://nodejs.org)）。应用启动时会自动检测；若未找到，将弹窗提示下载链接。
+
 ## 开始使用
 
 环境与唯一命令表见 [开发文档](docs/development.md)。当前为 Node.js 24.14+，运行依赖 mysql2、redis 和 node-sql-parser。启动后打开终端打印的本机地址，或读取 `.local/endpoint.json`。
