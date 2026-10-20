@@ -51,6 +51,7 @@ npm run services:stop    # 仅删除本项目所有的容器，不影响其他�
 | 全部检查（语法 + 集成） | `npm run check` |
 | 运行测试 | `npm test`（只跑 `test/**/*.test.mjs`） |
 | SQLite CLI | `npm run db -- --help` |
+| MCP（stdio，默认只读） | `npm run mcp`（需 `TONGYUN_DB_URL`、`TONGYUN_DB_TOKEN`；写工具要 `TONGYUN_DB_MCP_ALLOW_WRITES=1`） |
 | 启动合成网络服务 | `npm run services:start` |
 | 停止合成网络服务 | `npm run services:stop` |
 | 百万行性能基准 | `node scripts/benchmark.mjs` |

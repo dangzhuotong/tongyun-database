@@ -29,6 +29,33 @@
 
 Agent 接入协议见 [Agent API](docs/agent-api.md)，工作台内也有「查看 Agent 接入」。令牌只存 `.local/agent-token`，不打印到日志。
 
+## MCP
+
+`npm run mcp` 启动 stdio MCP 服务，只通过本机 Agent HTTP API 工作，不直接连接数据库。默认只注册只读工具。写工具 `create_plan`、`apply_plan`、`rollback_plan` 仅在 `TONGYUN_DB_MCP_ALLOW_WRITES=1` 时注册；执行和回滚仍然要带 `approvedDigest`。
+
+地址和令牌放在环境变量里，不要写进仓库。`X-Tongyun-Actor` 默认 `agent:mcp`。
+
+Cursor 或 Claude Desktop 可这样配置（把路径和令牌换成你本机的）：
+
+```json
+{
+  "mcpServers": {
+    "tongyun-database": {
+      "command": "node",
+      "args": ["/绝对路径/tongyun-database/src/mcp/server.mjs"],
+      "env": {
+        "TONGYUN_DB_URL": "http://127.0.0.1:4319",
+        "TONGYUN_DB_TOKEN": "<.local/agent-token 的内容>",
+        "TONGYUN_DB_CONNECTION": "local-sqlite",
+        "TONGYUN_DB_TASK": "mcp"
+      }
+    }
+  }
+}
+```
+
+需要写工具时，在 `env` 里加上 `"TONGYUN_DB_MCP_ALLOW_WRITES": "1"`。生产连接本身仍禁止写入。
+
 ## MySQL 与 Redis 面板
 
 - **MySQL**：连接和测试、基础表树与按需结构、受限只读 SELECT、主键游标分页、单行 UPDATE 的真实预览/回滚 SQL。BIGINT/DECIMAL 按字符串返回，避免丢精度。变更只支持可验证恢复的 InnoDB 表，要求单列主键、可检查触发器元数据，拒绝触发器、关联外键和不支持的列类型。
