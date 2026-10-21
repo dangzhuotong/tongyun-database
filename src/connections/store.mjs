@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { ChangeError } from '../change-control/core.mjs';
+import { secretDelete, secretGet, secretSet, secretsEnabled } from './vault-cli.mjs';
 
 export const requireValue = (condition, code) => { if (!condition) throw new ChangeError(code); };
 export class ConnectionStore {
@@ -31,14 +32,20 @@ export class ConnectionStore {
     renameSync(temporary, this.path); chmodSync(this.path, 0o600);
   }
   public(record) {
-    const { password, ...safe } = record;
-    return { ...safe, hasPassword: Boolean(password) };
+    const { password, secretAccount, ...safe } = record;
+    return { ...safe, hasPassword: Boolean(password) || Boolean(secretAccount) };
+  }
+  hydrate(record) {
+    if (!record.secretAccount) return record;
+    const loaded = secretGet(this.directory, record.secretAccount);
+    requireValue(loaded.ok, loaded.code);
+    return { ...record, password: loaded.value };
   }
   list() { return this.read().map(record => this.public(record)); }
   get(id) {
     const record = this.read().find(c => c.id === id);
     requireValue(record, 'CONNECTION_NOT_FOUND');
-    return record;
+    return this.hydrate(record);
   }
   add(input) {
     requireValue(input && ['mysql', 'redis'].includes(input.engine), 'INVALID_ENGINE');
@@ -51,14 +58,27 @@ export class ConnectionStore {
     if (input.engine === 'mysql') requireValue(input.database.length > 0 && input.username.length > 0, 'MYSQL_DATABASE_REQUIRED');
     else requireValue(/^\d{1,3}$/.test(input.database) && Number(input.database) <= 255, 'INVALID_REDIS_DATABASE');
     requireValue(!(input.allowWrites && input.environment === 'production'), 'PRODUCTION_WRITES_DISABLED');
+    const id = randomUUID();
     const record = {
-      id: randomUUID(), revision: randomUUID(), name: input.name.trim(), engine: input.engine,
-      host: input.host, port: input.port, database: input.database, username: input.username, password: input.password,
+      id, revision: randomUUID(), name: input.name.trim(), engine: input.engine,
+      host: input.host, port: input.port, database: input.database, username: input.username,
       tls: input.tls === true, allowWrites: input.allowWrites === true, environment: input.environment,
     };
+    if (secretsEnabled()) record.secretAccount = `connection/${id}`;
+    else record.password = input.password;
     const records = this.read();
     requireValue(records.length < 100, 'CONNECTION_LIMIT');
-    records.push(record); this.write(records);
+    records.push(record);
+    this.write(records);
+    if (record.secretAccount) {
+      const wrote = secretSet(this.directory, record.secretAccount, input.password);
+      const loaded = wrote.ok ? secretGet(this.directory, record.secretAccount) : wrote;
+      if (!wrote.ok || !loaded.ok || loaded.value !== input.password) {
+        this.write(records.filter(item => item.id !== id));
+        secretDelete(this.directory, record.secretAccount);
+        throw new ChangeError(wrote.code || loaded.code || 'CONNECTION_SECRET_UNAVAILABLE');
+      }
+    }
     return this.public(record);
   }
 }

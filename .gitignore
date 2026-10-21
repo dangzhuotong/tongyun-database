@@ -7,6 +7,9 @@ secrets*
 node_modules/
 target/
 dist/
+apps/desktop/dist
+apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/target
 build/
 .venv/
 .local/

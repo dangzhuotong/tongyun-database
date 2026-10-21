@@ -6,8 +6,49 @@ import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ChangeControl, privateJson, ChangeError } from './change-control/core.mjs';
 import { ConnectionStore } from './connections/store.mjs';
+import { activateSecrets } from './connections/vault-cli.mjs';
 import { RemoteService } from './connections/service.mjs';
 import { beginQuery, finishQuery, normalizeQueryId, prepareCancel } from './queries/registry.mjs';
+
+export function frameAncestorsPolicy(env = process.env) {
+  if (env.TONGYUN_DESKTOP !== '1') return "frame-ancestors 'none'";
+  if (env.TONGYUN_DESKTOP_DEV === '1') {
+    return "frame-ancestors http://127.0.0.1:1420 http://localhost:1420 http://tauri.localhost tauri://localhost";
+  }
+  return "frame-ancestors http://tauri.localhost tauri://localhost";
+}
+
+export function directoryFromArgs(argv) {
+  const index = argv.indexOf('--data-dir');
+  if (index === -1) return '';
+  const value = argv[index + 1];
+  if (!value || value.startsWith('-')) return '';
+  return resolve(value);
+}
+
+function watchDesktopParent() {
+  if (process.env.TONGYUN_DESKTOP !== '1') return;
+  let quitting = false;
+  const quit = () => {
+    if (quitting) return;
+    quitting = true;
+    process.exit(0);
+  };
+  const parent = process.ppid;
+  if (!process.stdin.isTTY) {
+    process.stdin.on('end', quit);
+    process.stdin.on('close', quit);
+    process.stdin.resume();
+  }
+  const timer = setInterval(() => {
+    if (process.ppid !== parent) {
+      quit();
+      return;
+    }
+    try { process.kill(parent, 0); } catch { quit(); }
+  }, 1000);
+  if (typeof timer.unref === 'function') timer.unref();
+}
 
 async function runCancellable(body, context, fn) {
   const begun = beginQuery(normalizeQueryId(body?.queryId), { connectionId: context.connectionId, taskId: context.taskId, environment: context.environment });
@@ -28,8 +69,9 @@ export function createWorkbench({ filename, token }) {
   return createServer(async (req, res) => {
     const port = req.socket.localPort;
     const origin = `http://127.0.0.1:${port}`;
+    const frameAncestors = frameAncestorsPolicy();
     const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
+      'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; ${frameAncestors}; base-uri 'none'; form-action 'self'` };
     const reply = (status, value) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8' }); res.end(privateJson(value)); };
     if (req.headers.host !== `127.0.0.1:${port}` || (req.headers.origin && req.headers.origin !== origin)) return reply(403, { ok: false, error: 'UNTRUSTED_ORIGIN' });
     let url;
@@ -100,10 +142,13 @@ export function createWorkbench({ filename, token }) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // TONGYUN_DATA_DIR: optional override for the data directory (defaults to .local/ next to the repo).
   // When set, all runtime files (sandbox.sqlite, agent-token, endpoint.json) are stored there instead.
-  const localDir = process.env.TONGYUN_DATA_DIR
-    ? resolve(process.env.TONGYUN_DATA_DIR)
-    : fileURLToPath(new URL('../.local/', import.meta.url));
+  const localDir = directoryFromArgs(process.argv)
+    || (process.env.TONGYUN_DATA_DIR
+      ? resolve(process.env.TONGYUN_DATA_DIR)
+      : fileURLToPath(new URL('../.local/', import.meta.url)));
   mkdirSync(localDir, { recursive: true, mode: 0o700 }); chmodSync(localDir, 0o700);
+  watchDesktopParent();
+  activateSecrets(localDir);
   const filename = join(localDir, 'sandbox.sqlite');
   if (!existsSync(filename)) {
     const db = new DatabaseSync(filename);
@@ -118,7 +163,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   writeFileSync(join(localDir, 'agent-token'), token, { mode: 0o600 }); chmodSync(join(localDir, 'agent-token'), 0o600);
   const server = createWorkbench({ filename, token });
   const port = Number(process.env.TONGYUN_DATABASE_PORT ?? 4319);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_PORT');
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('INVALID_PORT');
   server.listen(port, '127.0.0.1', () => {
     const url = `http://127.0.0.1:${server.address().port}`;
     writeFileSync(join(localDir, 'endpoint.json'), JSON.stringify({ url, tokenFile: process.env.TONGYUN_DATA_DIR ? join(localDir, 'agent-token') : '.local/agent-token', environment: 'sandbox' }), { mode: 0o600 });

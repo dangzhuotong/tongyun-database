@@ -13,7 +13,8 @@
     "db": "node src/cli.mjs",
     "mcp": "node src/mcp/server.mjs",
     "services:start": "node scripts/services.mjs start",
-    "services:stop": "node scripts/services.mjs stop"
+    "services:stop": "node scripts/services.mjs stop",
+    "desktop": "cargo build --locked -p tongyun-database-core --bin tongyun-database-secrets && npm run tauri --prefix apps/desktop -- dev"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

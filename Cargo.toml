@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tongyun-database-core",
+    "apps/desktop/src-tauri",
+]
+default-members = ["crates/tongyun-database-core"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.1"
