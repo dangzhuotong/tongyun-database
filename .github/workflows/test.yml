@@ -69,5 +69,8 @@ jobs:
       - run: npm run build
       - name: Install Node sidecar dependencies
         working-directory: ${{ github.workspace }}
-        run: npm ci
+        run: npm ci --omit=dev
+      - name: Check sidecar bundle resources
+        working-directory: ${{ github.workspace }}
+        run: node scripts/check-sidecar-resources.mjs
       - run: cargo check --locked -p tongyun-database-desktop

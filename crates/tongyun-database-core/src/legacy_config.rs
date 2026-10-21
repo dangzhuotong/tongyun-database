@@ -359,50 +359,52 @@ fn map_sqlite(err: rusqlite::Error) -> SecretStoreError {
     }
 }
 
-/// After the destination vault read-back succeeds, the source ciphertext and
-/// key are no longer needed. Rename them in place so a later launch does not
-/// keep a second copy of the password material.
+/// After the destination vault read-back succeeds, remove the source key.
+/// A renamed ciphertext and key in the same directory can still be decrypted.
+/// The ciphertext is kept under `*.migrated-<timestamp>` for inspection; the
+/// key is overwritten and deleted. The destination keeps its own key.
 pub fn retire_legacy_secrets(dir: &Path) -> Result<Vec<PathBuf>, SecretStoreError> {
     let meta = fs::symlink_metadata(dir)?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(SecretStoreError::RefusingSymlink);
     }
+    let key_path = dir.join(KEY_NAME);
+    if secret_store::regular_file_exists(&key_path)? {
+        secret_store::write_private_file(&key_path, &[0u8; 32])?;
+        fs::remove_file(&key_path)?;
+    }
+    let from = dir.join(PRIVATE_NAME);
+    if !secret_store::regular_file_exists(&from)? {
+        return Ok(Vec::new());
+    }
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let mut renamed = Vec::new();
-    for name in [PRIVATE_NAME, KEY_NAME] {
-        let from = dir.join(name);
-        if !secret_store::regular_file_exists(&from)? {
-            continue;
-        }
-        let mut index = 0u32;
-        let to = loop {
-            let file_name = if index == 0 {
-                format!("{name}.migrated-{stamp}")
-            } else {
-                format!("{name}.migrated-{stamp}-{index}")
-            };
-            let candidate = dir.join(file_name);
-            match fs::symlink_metadata(&candidate) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(SecretStoreError::RefusingSymlink);
-                }
-                Ok(_) => {
-                    index += 1;
-                    if index > 20 {
-                        return Err(SecretStoreError::Corrupt);
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => break candidate,
-                Err(err) => return Err(err.into()),
-            }
+    let mut index = 0u32;
+    let to = loop {
+        let file_name = if index == 0 {
+            format!("{PRIVATE_NAME}.migrated-{stamp}")
+        } else {
+            format!("{PRIVATE_NAME}.migrated-{stamp}-{index}")
         };
-        fs::rename(&from, &to)?;
-        renamed.push(to);
-    }
-    Ok(renamed)
+        let candidate = dir.join(file_name);
+        match fs::symlink_metadata(&candidate) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(SecretStoreError::RefusingSymlink);
+            }
+            Ok(_) => {
+                index += 1;
+                if index > 20 {
+                    return Err(SecretStoreError::Corrupt);
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => break candidate,
+            Err(err) => return Err(err.into()),
+        }
+    };
+    fs::rename(&from, &to)?;
+    Ok(vec![to])
 }
 
 pub fn retire_imported_source(dest: &Path) -> Result<Vec<PathBuf>, SecretStoreError> {
@@ -636,14 +638,27 @@ mod tests {
         let report = migrate_connection_passwords(&dest).unwrap();
         assert_eq!(report.imported, 1);
         let retired = retire_imported_source(&dest).unwrap();
-        assert_eq!(retired.len(), 2);
+        assert_eq!(retired.len(), 1);
         assert!(!source.join(PRIVATE_NAME).exists());
         assert!(!source.join(KEY_NAME).exists());
-        assert!(retired.iter().all(|path| path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains(".migrated-")));
+        let kept = retired[0].file_name().unwrap().to_string_lossy();
+        assert!(kept.starts_with("connections.private.json.migrated-"));
+        assert!(!kept.contains("connection-key"));
+        for entry in fs::read_dir(&source).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(
+                !name.contains("connection-key"),
+                "source still has a key file: {name}"
+            );
+            if path.is_file() {
+                let bytes = fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(32).any(|window| window == [7u8; 32]),
+                    "source file {name} still contains the connection key"
+                );
+            }
+        }
         assert!(!dest.join(SOURCE_POINTER).exists());
         assert!(dest.join(KEY_NAME).exists());
         let _ = fs::remove_dir_all(&source);

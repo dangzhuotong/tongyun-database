@@ -198,7 +198,7 @@ fn note_retired(dir: &Path, retired: &[PathBuf]) {
         .join(", ");
     let _ = writeln!(
         log,
-        "已将旧目录中的连接密码文件改名为 {names}。密码在当前数据目录的 secrets.vault。"
+        "已删除旧目录中的 connection-key，只保留无法单独解密的密文：{names}。密码在当前数据目录的 secrets.vault。"
     );
 }
 

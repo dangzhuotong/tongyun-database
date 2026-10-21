@@ -2,8 +2,10 @@
 //! The sidecar is the existing `src/server.mjs`. CLI and MCP stay on that
 //! same Node entry so the change-control checks are not reimplemented.
 
+use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
+#[cfg(unix)]
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -257,7 +259,7 @@ fn node_from_login_shell() -> Option<PathBuf> {
     }
     for shell in ["zsh", "bash"] {
         let mut command = Command::new(shell);
-        command.args(["-lic", "command -v node"]);
+        command.args(["-lc", "command -v node"]);
         let Some(output) = output_with_timeout(command, Duration::from_secs(3)) else {
             continue;
         };
@@ -279,87 +281,142 @@ fn node_from_login_shell() -> Option<PathBuf> {
 }
 
 fn output_with_timeout(mut command: Command, timeout: Duration) -> Option<std::process::Output> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().ok()?;
+    #[cfg(not(unix))]
+    {
+        let _ = (command, timeout);
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().ok()?;
+        let mut pipe = child.stdout.take()?;
+        read_stdout_within_timeout(&mut child, &mut pipe, timeout)
+    }
+}
+
+#[cfg(unix)]
+fn read_stdout_within_timeout(
+    child: &mut std::process::Child,
+    pipe: &mut std::process::ChildStdout,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    set_nonblocking(pipe);
+    let mut stdout = Vec::new();
     let start = Instant::now();
+    let mut exited = None;
+    let mut eof = false;
+    let mut buf = [0u8; 2048];
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut pipe) = child.stdout.take() {
-                    let _ = pipe.read_to_end(&mut stdout);
-                }
-                if !status.success() {
-                    return None;
-                }
-                return Some(std::process::Output {
-                    status,
-                    stdout,
-                    stderr: Vec::new(),
-                });
-            }
-            Ok(None) if start.elapsed() > timeout => {
+        let read = pipe.read(&mut buf);
+        match read {
+            Ok(0) => eof = true,
+            Ok(n) => stdout.extend_from_slice(&buf[..n]),
+            Err(ref err)
+                if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::Interrupted => {}
+            Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
-            Err(_) => return None,
+        }
+        if exited.is_none() {
+            match child.try_wait() {
+                Ok(status) => exited = status,
+                Err(_) => return None,
+            }
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        let drained = matches!(read, Ok(n) if n > 0);
+        if exited.is_some() && (eof || !drained) {
+            break;
+        }
+        if exited.is_some() {
+            continue;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = exited.or_else(|| child.wait().ok())?;
+    if !status.success() {
+        return None;
+    }
+    Some(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+#[cfg(unix)]
+fn set_nonblocking(pipe: &impl std::os::unix::io::AsRawFd) {
+    let fd = pipe.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
         }
     }
 }
 
-pub fn command_owns_sidecar(cmdline: &str, data_dir: &Path) -> bool {
-    let dir = data_dir.to_string_lossy();
-    if cmdline.is_empty() || dir.is_empty() {
+pub fn command_owns_sidecar(argv: &[OsString], data_dir: &Path) -> bool {
+    if argv.is_empty() || data_dir.as_os_str().is_empty() {
         return false;
     }
-    cmdline.contains("server.mjs") && cmdline.contains(dir.as_ref())
+    let has_server = argv.iter().any(|arg| arg_is_server_script(arg));
+    has_server && argv_has_exact_data_dir(argv, data_dir)
+}
+
+fn arg_is_server_script(arg: &OsString) -> bool {
+    let path = Path::new(arg);
+    path.file_name().is_some_and(|name| name == "server.mjs")
+}
+
+fn argv_has_exact_data_dir(argv: &[OsString], data_dir: &Path) -> bool {
+    let mut args = argv.iter();
+    while let Some(arg) = args.next() {
+        let text = arg.to_string_lossy();
+        if text == "--data-dir" {
+            let Some(value) = args.next() else {
+                return false;
+            };
+            if Path::new(value) == data_dir {
+                return true;
+            }
+        } else if let Some(value) = text.strip_prefix("--data-dir=") {
+            if Path::new(value) == data_dir {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn is_our_sidecar(pid: u32, data_dir: &Path) -> bool {
-    let Some(cmdline) = read_process_command(pid) else {
+    let Some(argv) = read_process_argv(pid) else {
         return false;
     };
-    command_owns_sidecar(&cmdline, data_dir)
+    command_owns_sidecar(&argv, data_dir)
 }
 
-pub fn read_process_command(pid: u32) -> Option<String> {
+pub fn read_process_argv(pid: u32) -> Option<Vec<OsString>> {
     if pid <= 1 {
         return None;
     }
     #[cfg(target_os = "linux")]
     {
         let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-        if raw.is_empty() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&raw).replace('\0', " ");
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        split_nul_argv(&raw)
     }
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("ps")
-            .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        read_macos_argv(pid)
     }
     #[cfg(windows)]
     {
@@ -376,7 +433,7 @@ pub fn read_process_command(pid: u32) -> Option<String> {
         if text.is_empty() {
             None
         } else {
-            Some(text)
+            Some(split_windows_command_line(&text))
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -384,6 +441,120 @@ pub fn read_process_command(pid: u32) -> Option<String> {
         let _ = pid;
         None
     }
+}
+
+fn split_nul_argv(raw: &[u8]) -> Option<Vec<OsString>> {
+    if raw.is_empty() {
+        return None;
+    }
+    let args = raw
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(os_from_bytes)
+        .collect::<Vec<_>>();
+    if args.is_empty() {
+        None
+    } else {
+        Some(args)
+    }
+}
+
+fn os_from_bytes(bytes: &[u8]) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(bytes.to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        OsString::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_argv(pid: u32) -> Option<Vec<OsString>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size == 0 || size > 1_000_000 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    if buf.len() < 4 {
+        return None;
+    }
+    let argc = i32::from_ne_bytes(buf[..4].try_into().ok()?) as usize;
+    if argc == 0 || argc > 4096 {
+        return None;
+    }
+    let mut offset = 4usize;
+    while offset < buf.len() && buf[offset] != 0 {
+        offset += 1;
+    }
+    while offset < buf.len() && buf[offset] == 0 {
+        offset += 1;
+    }
+    let mut args = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        if offset >= buf.len() {
+            return None;
+        }
+        let start = offset;
+        while offset < buf.len() && buf[offset] != 0 {
+            offset += 1;
+        }
+        if offset >= buf.len() {
+            return None;
+        }
+        args.push(os_from_bytes(&buf[start..offset]));
+        offset += 1;
+    }
+    Some(args)
+}
+
+#[cfg(windows)]
+fn split_windows_command_line(text: &str) -> Vec<OsString> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = false;
+    for ch in text.chars() {
+        match ch {
+            '"' => quote = !quote,
+            ' ' | '\t' if !quote => {
+                if !current.is_empty() {
+                    args.push(OsString::from(std::mem::take(&mut current)));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        args.push(OsString::from(current));
+    }
+    args
 }
 
 pub fn resolve_server_script(roots: &[PathBuf]) -> Option<PathBuf> {
@@ -419,7 +590,12 @@ fn secrets_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::fs;
+
+    fn argv(parts: &[&str]) -> Vec<OsString> {
+        parts.iter().copied().map(OsString::from).collect()
+    }
 
     #[test]
     fn node_24_is_required() {
@@ -511,16 +687,40 @@ mod tests {
     #[test]
     fn command_line_must_name_the_server_and_the_data_dir() {
         let dir = Path::new("/tmp/tongyun-data");
+        let ours = argv(&[
+            "node",
+            "/app/src/server.mjs",
+            "--data-dir",
+            "/tmp/tongyun-data",
+        ]);
+        assert!(command_owns_sidecar(&ours, dir));
         assert!(command_owns_sidecar(
-            "node /app/src/server.mjs --data-dir /tmp/tongyun-data",
+            &argv(&["node", "server.mjs", "--data-dir=/tmp/tongyun-data"]),
             dir
         ));
-        assert!(!command_owns_sidecar("node /app/src/server.mjs", dir));
         assert!(!command_owns_sidecar(
-            "python /tmp/tongyun-data/other.py",
+            &argv(&["node", "/app/src/server.mjs"]),
             dir
         ));
-        assert!(!command_owns_sidecar("", dir));
+        assert!(!command_owns_sidecar(
+            &argv(&[
+                "node",
+                "/app/src/server.mjs",
+                "--data-dir",
+                "/tmp/tongyun-data-extra",
+            ]),
+            dir
+        ));
+        assert!(!command_owns_sidecar(
+            &argv(&[
+                "node",
+                "/tmp/not-server.mjs-tool",
+                "--data-dir",
+                "/tmp/tongyun-data"
+            ]),
+            dir
+        ));
+        assert!(!command_owns_sidecar(&[], dir));
     }
 
     #[cfg(unix)]
@@ -539,12 +739,12 @@ mod tests {
             .spawn()
             .unwrap();
         let mut matched = false;
-        let mut cmdline = None;
+        let mut seen = None;
         for _ in 0..20 {
-            cmdline = super::read_process_command(ours.id());
-            matched = cmdline
-                .as_deref()
-                .is_some_and(|text| command_owns_sidecar(text, &data));
+            seen = super::read_process_argv(ours.id());
+            matched = seen
+                .as_ref()
+                .is_some_and(|args| command_owns_sidecar(args, &data));
             if matched {
                 break;
             }
@@ -554,8 +754,31 @@ mod tests {
         let _ = ours.kill();
         let _ = other.wait();
         let _ = ours.wait();
-        assert!(matched, "cmdline={cmdline:?} dir={}", data.display());
+        assert!(matched, "argv={seen:?} dir={}", data.display());
         let _ = fs::remove_dir_all(&data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_writer_cannot_hold_the_shell_lookup_open() {
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_secs(2);
+        let mut command = Command::new("bash");
+        command.args([
+            "-c",
+            "echo /tmp/node-from-shell; python3 -c 'import time; time.sleep(60)' tongyun-lookup-hold &",
+        ]);
+        let output = super::output_with_timeout(command, limit);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "lookup blocked for {:?}",
+            started.elapsed()
+        );
+        let text = String::from_utf8(output.expect("shell should exit").stdout).unwrap();
+        assert!(text.contains("/tmp/node-from-shell"));
+        let _ = Command::new("pkill")
+            .args(["-f", "tongyun-lookup-hold"])
+            .status();
     }
 
     #[test]
