@@ -106,12 +106,12 @@ X-Tongyun-Task: task-id
 | `GET /api/capabilities` | 当前连接支持的工具与限制 |
 | `GET /api/schema` | 表树；`?table=名称` 获取列元数据 |
 | `POST /api/query` | 受限只读 SELECT，最多 1000 行 / 2 MiB；可带 `queryId`，响应含 `status` |
-| `POST /api/queries/:queryId/cancel` | 取消进行中的查询；MySQL 为 `KILL QUERY`，并写审计 |
+| `POST /api/queries/:queryId/cancel` | 只取消仍在执行的查询；未知或已结束返回 `not_running`，不写审计。MySQL 在 `KILL QUERY` 结束后才返回 cancelled |
 | `POST /api/browse` | 主键游标分页 |
 | `POST /api/redis/scan` | SCAN，最多 1000 Key |
 | `POST /api/redis/read` | 读单 Key 类型、值、TTL |
 | `POST /api/plans` | 创建变更计划 |
-| `GET /api/plans/:id` | 查看计划私有详情（含 digest） |
+| `GET /api/plans/:id` | 查看计划私有详情（HTTP 含 digest；MCP 响应去掉 digest） |
 | `POST /api/plans/:id/apply` | 确认执行（需 approvedDigest） |
 | `POST /api/plans/:id/rollback` | 确认回滚（需 approvedDigest） |
 | `GET /api/audit` | 最近 200 条元数据，验证哈希链片段 |

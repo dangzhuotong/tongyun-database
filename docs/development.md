@@ -1,6 +1,6 @@
 # 开发与命令
 
-环境：Node.js >= 24（`.nvmrc` 为 24；`package.json` 的 `engines.node` 为 `>=24.14.0`，使用内置 node:sqlite）。依赖 mysql2（MIT）、redis（MIT）、node-sql-parser（Apache-2.0）。命令在仓库根执行。
+环境：Node.js >= 24（`.nvmrc` 为 `24.14.0`，与 `package.json` 的 `engines.node` `>=24.14.0` 对齐，使用内置 node:sqlite）。依赖 mysql2（MIT）、redis（MIT）、node-sql-parser（Apache-2.0）。命令在仓库根执行。
 
 | 目的 | 命令 | 成功条件 |
 | --- | --- | --- |

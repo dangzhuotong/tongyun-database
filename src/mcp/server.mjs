@@ -15,6 +15,14 @@ function textResult(value, isError = false) {
   return { isError, content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
+function withoutDigest(value) {
+  if (Array.isArray(value)) return value.map(withoutDigest);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => key !== 'digest')
+    .map(([key, child]) => [key, withoutDigest(child)]));
+}
+
 export function createDatabaseMcpServer(options = {}) {
   const env = options.env ?? process.env;
   const allowWrites = options.allowWrites ?? env.TONGYUN_DB_MCP_ALLOW_WRITES === '1';
@@ -45,8 +53,9 @@ export function createDatabaseMcpServer(options = {}) {
       let data;
       try { data = raw ? JSON.parse(raw) : {}; }
       catch { data = { ok: false, error: 'INVALID_RESPONSE' }; }
-      if (!response.ok || data.ok === false) return textResult({ status: response.status, ...data }, true);
-      return textResult(data);
+      const visible = withoutDigest(data);
+      if (!response.ok || data.ok === false) return textResult({ status: response.status, ...visible }, true);
+      return textResult(visible);
     } catch {
       return textResult({ ok: false, error: 'MCP_UPSTREAM_FAILED' }, true);
     }
@@ -68,17 +77,22 @@ export function createDatabaseMcpServer(options = {}) {
     annotations: READ_ONLY,
   }, async ({ table } = {}) => call('GET', table ? `/api/schema?table=${encodeURIComponent(table)}` : '/api/schema'));
   server.registerTool('run_query', {
-    description: '执行受限只读 SELECT，最多 1000 行 / 2 MiB。',
+    description: '执行受限只读 SELECT，最多 1000 行 / 2 MiB。传入 queryId 后可用 cancel_query 取消。',
     inputSchema: { sql: z.string(), queryId: z.string().optional() },
     annotations: READ_ONLY,
   }, async ({ sql, queryId }) => call('POST', '/api/query', defined({ sql, queryId })));
+  server.registerTool('cancel_query', {
+    description: '取消正在执行的查询或 Redis SCAN。未知或已结束的 queryId 返回 not_running。',
+    inputSchema: { queryId: z.string() },
+    annotations: READ_ONLY,
+  }, async ({ queryId }) => call('POST', `/api/queries/${encodeURIComponent(queryId)}/cancel`, {}));
   server.registerTool('browse_table', {
     description: '按单主键游标分页读取一张表。',
     inputSchema: { table: z.string(), after: z.string().optional() },
     annotations: READ_ONLY,
   }, async ({ table, after }) => call('POST', '/api/browse', defined({ table, after })));
   server.registerTool('redis_scan', {
-    description: '按模式 SCAN Redis Key，可带 queryId 以便取消。',
+    description: '按模式 SCAN Redis Key。传入 queryId 后可用 cancel_query 取消。',
     inputSchema: { pattern: z.string().optional(), cursor: z.string().optional(), queryId: z.string().optional() },
     annotations: READ_ONLY,
   }, async (args = {}) => call('POST', '/api/redis/scan', defined(args)));
@@ -93,7 +107,7 @@ export function createDatabaseMcpServer(options = {}) {
     annotations: READ_ONLY,
   }, async () => call('GET', '/api/plans'));
   server.registerTool('get_plan', {
-    description: '读取一份计划的私有详情、回滚材料和确认指纹。',
+    description: '读取一份计划的私有详情和回滚材料。响应不含 digest，不能据此自行执行。',
     inputSchema: { id: z.string() },
     annotations: READ_ONLY,
   }, async ({ id }) => call('GET', `/api/plans/${encodeURIComponent(id)}`));
@@ -105,17 +119,17 @@ export function createDatabaseMcpServer(options = {}) {
 
   if (allowWrites) {
     server.registerTool('create_plan', {
-      description: '创建变更计划，不会执行。仍受连接只读策略约束。',
+      description: '创建变更计划，不会执行。响应不含 digest。仍受连接只读策略约束。',
       inputSchema: { table: z.string().optional(), key: z.unknown().optional(), changes: z.unknown() },
       annotations: { readOnlyHint: false, destructiveHint: false },
     }, async args => call('POST', '/api/plans', defined(args)));
     server.registerTool('apply_plan', {
-      description: '用调用方提供的 approvedDigest 执行已准备的计划。',
+      description: '用审阅者另行提供的 approvedDigest 执行已准备的计划。本服务不回传该指纹。',
       inputSchema: { id: z.string(), approvedDigest: z.string() },
       annotations: WRITE,
     }, async ({ id, approvedDigest }) => call('POST', `/api/plans/${encodeURIComponent(id)}/apply`, { approvedDigest }));
     server.registerTool('rollback_plan', {
-      description: '用调用方提供的 approvedDigest 回滚已执行的计划。',
+      description: '用审阅者另行提供的 approvedDigest 回滚已执行的计划。本服务不回传该指纹。',
       inputSchema: { id: z.string(), approvedDigest: z.string() },
       annotations: WRITE,
     }, async ({ id, approvedDigest }) => call('POST', `/api/plans/${encodeURIComponent(id)}/rollback`, { approvedDigest }));

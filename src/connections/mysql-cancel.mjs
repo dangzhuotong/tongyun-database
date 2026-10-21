@@ -11,17 +11,24 @@ export async function killMysqlQuery(connect, threadId) {
 
 export function withMysqlCancel({ connect, threadId, signal, run }) {
   if (!signal) return Promise.resolve().then(run);
+  let kill = null;
+  const ensureKill = () => {
+    kill ??= killMysqlQuery(connect, threadId).then(() => {}, () => {});
+    return kill;
+  };
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
       signal.removeEventListener('abort', onAbort);
-      if (error) reject(error);
-      else resolve(value);
+      const done = () => { if (error) reject(error); else resolve(value); };
+      // A read error can arrive before KILL QUERY returns. Wait for that attempt.
+      if (signal.aborted || kill) ensureKill().then(done, done);
+      else done();
     };
     const onAbort = () => {
-      killMysqlQuery(connect, threadId).catch(() => {}).finally(() => finish(new ChangeError('QUERY_CANCELLED')));
+      ensureKill().then(() => finish(new ChangeError('QUERY_CANCELLED')));
     };
     if (signal.aborted) {
       onAbort();
@@ -32,7 +39,7 @@ export function withMysqlCancel({ connect, threadId, signal, run }) {
       if (signal.aborted) onAbort();
       else finish(null, value);
     }).catch(error => {
-      if (signal.aborted) finish(new ChangeError('QUERY_CANCELLED'));
+      if (signal.aborted) onAbort();
       else finish(error instanceof ChangeError ? error : new ChangeError('QUERY_FAILED'));
     });
   });

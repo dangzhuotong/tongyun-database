@@ -118,9 +118,11 @@ export function createWorkbench({ filename, token }) {
       else if (/^POST \/api\/queries\/[^/]+\/cancel$/.test(route)) {
         const queryId = decodeURIComponent(url.pathname.split('/')[3]);
         const pending = prepareCancel(queryId, { connectionId: context.connectionId, taskId: context.taskId, environment: context.environment });
-        control.noteQueryCancel(pending.queryId);
-        pending.apply();
-        result = { queryId: pending.queryId, status: 'cancelled' };
+        if (pending.status === 'cancelled') {
+          control.noteQueryCancel(pending.queryId);
+          pending.apply();
+        }
+        result = { queryId: pending.queryId, status: pending.status };
       }
       else if (route === 'POST /api/browse') result = remote ? await remote.browse(body.table, body.after) : await control.browse(body.table, body.after);
       else if (route === 'POST /api/redis/scan' && remote) result = await runCancellable(body, context, signal => remote.scan(body, { signal }));

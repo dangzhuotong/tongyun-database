@@ -15,7 +15,7 @@
 | GET /api/schema | SQL 基础表树；MySQL 列元数据按表懒加载 |
 | GET /api/schema?table=名称 | MySQL 指定表的列及建表 SQL |
 | POST /api/query | `{sql, queryId?}`；受限只读 SELECT，最多 1000 行 / 2 MiB。queryId 为 UUID；省略时由服务端生成。响应含 `queryId` 与 `status`：`completed` 或 `cancelled` |
-| POST /api/queries/:queryId/cancel | `{}`；取消同一连接、任务、环境下正在执行或尚未开始的查询。MySQL 用另一连接执行 `KILL QUERY <threadId>`，SQLite 中止查询进程，Redis SCAN 中断分批循环。写入 `cancel_query` 审计；查询本身的审计结果为 `cancelled` |
+| POST /api/queries/:queryId/cancel | `{}`；只取消同一连接、任务、环境下正在执行的查询。未知或已结束的 id 返回 `status: not_running`，不写取消审计，也不预留这个 id。MySQL 用另一连接执行 `KILL QUERY <threadId>`，查询在 KILL 结束后才返回 `cancelled`。SQLite 中止查询进程，Redis SCAN 中断分批循环。成功取消写入 `cancel_query` 审计；查询本身的审计结果为 `cancelled` |
 | GET /api/queries/:operationId | 显式读取同连接、环境、任务的私有原始 SQL/参数 |
 | POST /api/browse | `{table,after?}`；单主键游标分页，after 为字符串，返回 nextCursor |
 | POST /api/redis/scan | `{pattern?,cursor?,queryId?}`；默认 * / 0，COUNT=1000 提示；最多返回 1000 个 Key，nextCursor 可为不透明本机游标。queryId 与 `POST /api/queries/:queryId/cancel` 相同，取消会中断扫描循环 |
@@ -55,6 +55,6 @@ SQLite：prepared → applied → rolled_back。MySQL/Redis：prepared → apply
 
 当前无连接编辑/删除 API、Redis Cluster、PostgreSQL/D1、桌面打包与内置模型调用。测试版本为 MySQL 8.4 与 Redis 7.4；TLS、生产 ACL、其他版本及长期负载未验证。
 
-stdio MCP（`npm run mcp`）是这套 HTTP API 的客户端，不是另一条写库通道。默认只暴露只读工具；`TONGYUN_DB_MCP_ALLOW_WRITES=1` 才注册计划创建、执行和回滚，执行与回滚仍要 `approvedDigest`。
+stdio MCP（`npm run mcp`）是这套 HTTP API 的客户端，不是另一条写库通道。默认只暴露只读工具，其中包括 `cancel_query`。`TONGYUN_DB_MCP_ALLOW_WRITES=1` 才注册计划创建、执行和回滚。执行与回滚仍要调用方另行提供 `approvedDigest`。MCP 会从工具响应里去掉 `digest`（计划详情、列表、创建结果和审计都不回传），打开写开关也不能从这些响应里抄指纹再执行。HTTP API 仍向工作台返回 digest。
 
 Redis Hash 字段级 TTL 暂不支持可回滚变更；普通 Key TTL 已支持。大 Key 超过内容查看/编辑上限时，仅 SCAN 元数据可用。

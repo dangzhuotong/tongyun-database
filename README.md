@@ -21,7 +21,7 @@
 3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
 4. 窗口里就是数据工作台。数据文件仍在 `~/Library/Application Support/tongyun-database/`。已有的连接会在第一次启动时迁入加密密码文件，保存设置不会弹出钥匙串密码。从别的目录导入时，旧目录里的连接密钥会被删除，只留下无法单独解密的密文。
 
-> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。从访达打开时 PATH 很短，桌面壳会查找 Homebrew、Volta、fnm、nvm、asdf 和登录 shell；仍找不到时窗口会说明，也可以把 `TONGYUN_NODE` 设为 node 的绝对路径。开发时也可以继续 `npm start`，用浏览器打开终端里的地址。
+> **前置要求**：本机需安装 **Node.js >= 24.14**（仓库 `engines` 与 `.nvmrc` 均为 24.14.0；[nodejs.org](https://nodejs.org)）。从访达打开时 PATH 很短，桌面壳会查找 Homebrew、Volta、fnm、nvm、asdf 和登录 shell；仍找不到时窗口会说明，也可以把 `TONGYUN_NODE` 设为 node 的绝对路径。开发时也可以继续 `npm start`，用浏览器打开终端里的地址。
 
 ## 开始使用
 
@@ -31,7 +31,7 @@ Agent 接入协议见 [Agent API](docs/agent-api.md)，工作台内也有「查�
 
 ## MCP
 
-`npm run mcp` 启动 stdio MCP 服务，只通过本机 Agent HTTP API 工作，不直接连接数据库。默认只注册只读工具。写工具 `create_plan`、`apply_plan`、`rollback_plan` 仅在 `TONGYUN_DB_MCP_ALLOW_WRITES=1` 时注册；执行和回滚仍然要带 `approvedDigest`。
+`npm run mcp` 启动 stdio MCP 服务，只通过本机 Agent HTTP API 工作，不直接连接数据库。默认只注册只读工具，其中 `cancel_query` 用来取消带 `queryId` 的查询。写工具 `create_plan`、`apply_plan`、`rollback_plan` 仅在 `TONGYUN_DB_MCP_ALLOW_WRITES=1` 时注册；执行和回滚仍然要带审阅者提供的 `approvedDigest`。MCP 响应不含 `digest`。
 
 地址和令牌放在环境变量里，不要写进仓库。`X-Tongyun-Actor` 默认 `agent:mcp`。
 

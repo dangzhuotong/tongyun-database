@@ -324,7 +324,10 @@ $('#cancel').onclick = async () => {
   const tab = activeTab();
   if (!tab?.running || !tab.queryId) return;
   $('#cancel').disabled = true;
-  try { await api(`queries/${tab.queryId}/cancel`, {}); $('#status').textContent = '正在取消查询…'; }
+  try {
+    const data = await api(`queries/${tab.queryId}/cancel`, {});
+    $('#status').textContent = data.status === 'not_running' ? '没有正在执行的查询' : '正在取消查询…';
+  }
   catch (error) { $('#query-error').textContent = error.message; $('#query-error').hidden = false; toast(error.message); updateRunButtons(); }
 };
 $('#sql').addEventListener('input', () => { const tab = activeTab(); if (!tab) return; tab.sql = $('#sql').value; persistTabs(); });
@@ -366,7 +369,7 @@ $('#refresh-schema').onclick = () => action($('#refresh-schema'), $('#query-erro
 $('#refresh-plans').onclick = () => plans().catch(e => toast(e.message));
 $('#refresh-audit').onclick = () => audit().catch(e => toast(e.message));
 $('#older-audit').onclick = () => audit(auditCursor).catch(e => toast(e.message));
-$('#agent-open').onclick = () => { $('#agent-doc').textContent = `${location.origin}\n\nGET  /api/connections\nPOST /api/connections/:id/test\nGET  /api/capabilities\nGET  /api/schema\nPOST /api/query       { sql, queryId? }\nPOST /api/queries/:queryId/cancel\nPOST /api/browse      { table, after? }\nPOST /api/redis/scan  { pattern, cursor?, queryId? }\nPOST /api/redis/read  { key }\nPOST /api/plans       { table, key, changes }\nGET  /api/plans/:id\nPOST /api/plans/:id/apply\nPOST /api/plans/:id/rollback\nGET  /api/audit\n\nAuthorization: Bearer <本机令牌>\nX-Tongyun-Connection: ${state.connection.id}\nX-Tongyun-Actor: agent:your-agent\nX-Tongyun-Task: local-demo\n\n执行 / 回滚请求：{ approvedDigest }`; $('#agent-dialog').showModal(); };
+$('#agent-open').onclick = () => { $('#agent-doc').textContent = `${location.origin}\n\nGET  /api/connections\nPOST /api/connections/:id/test\nGET  /api/capabilities\nGET  /api/schema\nPOST /api/query       { sql, queryId? }\nPOST /api/queries/:queryId/cancel  （仅进行中；否则 status=not_running）\nPOST /api/browse      { table, after? }\nPOST /api/redis/scan  { pattern, cursor?, queryId? }\nPOST /api/redis/read  { key }\nPOST /api/plans       { table, key, changes }\nGET  /api/plans/:id\nPOST /api/plans/:id/apply\nPOST /api/plans/:id/rollback\nGET  /api/audit\n\nAuthorization: Bearer <本机令牌>\nX-Tongyun-Connection: ${state.connection.id}\nX-Tongyun-Actor: agent:your-agent\nX-Tongyun-Task: local-demo\n\n执行 / 回滚请求：{ approvedDigest }`; $('#agent-dialog').showModal(); };
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click', e => { if (e.target === dialog) { const r = dialog.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) dialog.close(); } }));
 function setDefaultSql(force = false) {
   const table=state.tables.find(t=>t.name===state.table); if(!table) return;

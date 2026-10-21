@@ -68,21 +68,30 @@ test('aborting a slow query returns cancelled and the same database still answer
   assert.ok(audit.events.some(event => event.action === 'query' && event.outcome === 'cancelled' && event.operationId === queryId));
 });
 
-test('cancel before the query is registered still returns cancelled and a new query works', async t => {
+test('unknown or finished query cancel returns not_running and does not block that id', async t => {
   const { filename } = fixture(t);
   const server = createWorkbench({ filename, token: 'test-token' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const queryId = randomUUID();
-  const task = 'early-cancel';
-  const cancel = await fetch(`${base}/api/queries/${queryId}/cancel`, { method: 'POST', headers: headers(task), body: '{}' });
-  assert.equal((await cancel.json()).status, 'cancelled');
-  const blocked = await (await fetch(`${base}/api/query`, { method: 'POST', headers: headers(task), body: JSON.stringify({ queryId, sql: 'SELECT name FROM users' }) })).json();
-  assert.equal(blocked.status, 'cancelled');
-  const again = await (await fetch(`${base}/api/query`, { method: 'POST', headers: headers(task), body: JSON.stringify({ sql: 'SELECT name FROM users' }) })).json();
-  assert.equal(again.status, 'completed');
-  assert.equal(again.rows.length, 1);
+  const task = 'idle-cancel';
+  const early = await fetch(`${base}/api/queries/${queryId}/cancel`, { method: 'POST', headers: headers(task), body: '{}' });
+  assert.equal(early.status, 200);
+  assert.equal((await early.json()).status, 'not_running');
+  const first = await (await fetch(`${base}/api/query`, { method: 'POST', headers: headers(task), body: JSON.stringify({ queryId, sql: 'SELECT name FROM users' }) })).json();
+  assert.equal(first.status, 'completed');
+  assert.equal(first.rows.length, 1);
+  const late = await fetch(`${base}/api/queries/${queryId}/cancel`, { method: 'POST', headers: headers(task), body: '{}' });
+  assert.equal((await late.json()).status, 'not_running');
+  const reused = await (await fetch(`${base}/api/query`, { method: 'POST', headers: headers(task), body: JSON.stringify({ queryId, sql: 'SELECT name FROM users' }) })).json();
+  assert.notEqual(reused.status, 'cancelled');
+  assert.notEqual(reused.error, 'QUERY_CANCELLED');
+  const fresh = await (await fetch(`${base}/api/query`, { method: 'POST', headers: headers(task), body: JSON.stringify({ sql: 'SELECT name FROM users' }) })).json();
+  assert.equal(fresh.status, 'completed');
+  assert.equal(fresh.rows.length, 1);
+  const audit = await (await fetch(`${base}/api/audit`, { headers: headers(task) })).json();
+  assert.equal(audit.events.some(event => event.action === 'cancel_query' && event.operationId === queryId), false);
 });
 
 test('mysql cancel uses another connection to KILL QUERY and the next call still runs', async () => {
@@ -102,6 +111,45 @@ test('mysql cancel uses another connection to KILL QUERY and the next call still
   });
   assert.equal(next.rows[0].n, 1);
   assert.deepEqual(killed, ['KILL QUERY 42']);
+});
+
+test('mysql cancel reports cancelled only after KILL QUERY finishes', async () => {
+  let release;
+  const killed = [];
+  const connect = async () => ({
+    promise() { return { query: sql => new Promise(resolve => { killed.push(sql); release = resolve; }) }; },
+    destroy() {},
+  });
+  const controller = new AbortController();
+  let settled = false;
+  const pending = withMysqlCancel({
+    connect, threadId: 42, signal: controller.signal, run: () => new Promise(() => {}),
+  }).then(() => { settled = 'ok'; }, () => { settled = 'err'; });
+  controller.abort();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.deepEqual(killed, ['KILL QUERY 42']);
+  release();
+  await pending;
+  assert.equal(settled, 'err');
+
+  const failed = new AbortController();
+  let failedSettled = false;
+  let releaseFailure;
+  const failing = withMysqlCancel({
+    connect: async () => ({
+      promise() { return { query: () => new Promise(resolve => { releaseFailure = resolve; }) }; },
+      destroy() {},
+    }),
+    threadId: 9,
+    signal: failed.signal,
+    run: async () => { failed.abort(); throw new Error('read closed'); },
+  }).then(() => { failedSettled = true; }, () => { failedSettled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(failedSettled, false);
+  releaseFailure();
+  await failing;
+  assert.equal(failedSettled, true);
 });
 
 test('redis scan chunk loop stops when aborted and a later scan completes', async () => {
