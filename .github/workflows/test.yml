@@ -58,11 +58,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Install Node sidecar dependencies
+        working-directory: ${{ github.workspace }}
+        run: npm ci
       - run: cargo check --locked -p tongyun-database-desktop
