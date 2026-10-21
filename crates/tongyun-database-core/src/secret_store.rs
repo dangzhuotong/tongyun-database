@@ -195,6 +195,7 @@ pub enum SecretStoreError {
     RefusingSymlink,
     MissingSeed,
     NotOwner,
+    DatabaseBusy,
     Legacy(String),
 }
 
@@ -219,6 +220,7 @@ impl std::fmt::Display for SecretStoreError {
             Self::NotOwner => {
                 write!(f, "secret store directory is not owned by the current user")
             }
+            Self::DatabaseBusy => write!(f, "SQLite 数据库正被旧的工作台占用，请先退出后再打开。"),
             Self::Legacy(msg) => write!(f, "legacy secret source: {msg}"),
         }
     }

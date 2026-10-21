@@ -5,11 +5,29 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { ConnectionStore } from '../src/connections/store.mjs';
-import { discoverSecretsBin } from '../src/connections/vault-cli.mjs';
+import { activateSecrets, discoverSecretsBin } from '../src/connections/vault-cli.mjs';
 
 const bin = discoverSecretsBin();
 const required = process.env.TONGYUN_REQUIRE_SECRETS_BIN === '1';
 if (required && !bin) throw new Error('TONGYUN_SECRETS_BIN is required but target/debug/tongyun-database-secrets is missing');
+
+test('npm start does not migrate just because the debug binary exists', () => {
+  const previousBin = process.env.TONGYUN_SECRETS_BIN;
+  const previousFlag = process.env.TONGYUN_MIGRATE_SECRETS;
+  delete process.env.TONGYUN_SECRETS_BIN;
+  delete process.env.TONGYUN_MIGRATE_SECRETS;
+  try {
+    const discovered = discoverSecretsBin();
+    assert.equal(activateSecrets(join(tmpdir(), 'unused-tongyun-migrate')), false);
+    assert.equal(process.env.TONGYUN_SECRETS_BIN, undefined);
+    if (discovered) assert.equal(discovered.includes('tongyun-database-secrets'), true);
+  } finally {
+    if (previousBin === undefined) delete process.env.TONGYUN_SECRETS_BIN;
+    else process.env.TONGYUN_SECRETS_BIN = previousBin;
+    if (previousFlag === undefined) delete process.env.TONGYUN_MIGRATE_SECRETS;
+    else process.env.TONGYUN_MIGRATE_SECRETS = previousFlag;
+  }
+});
 
 test('connection passwords move into the file vault and settings stay out of it', { skip: !bin }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'tongyun-vault-'));

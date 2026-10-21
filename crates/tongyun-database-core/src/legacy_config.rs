@@ -6,6 +6,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -22,6 +23,8 @@ use crate::secret_store::{self, FileSecretStore, SecretStoreError, StorePaths};
 const MARKER_NAME: &str = "connections.migrated";
 const PRIVATE_NAME: &str = "connections.private.json";
 const KEY_NAME: &str = "connection-key";
+const SOURCE_POINTER: &str = "legacy-import-source";
+const SQLITE_NAME: &str = "sandbox.sqlite";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordMigration {
@@ -263,34 +266,190 @@ pub fn import_tree(dest: &Path, source: &Path) -> Result<bool, SecretStoreError>
     if !source_has_state(source)? {
         return Ok(false);
     }
-    for name in [
-        "sandbox.sqlite",
-        "sandbox.sqlite-wal",
-        "sandbox.sqlite-shm",
-        PRIVATE_NAME,
-        KEY_NAME,
-    ] {
+    let sqlite = source.join(SQLITE_NAME);
+    if secret_store::regular_file_exists(&sqlite)? {
+        copy_sqlite_snapshot(&sqlite, &dest.join(SQLITE_NAME))?;
+    }
+    for name in [PRIVATE_NAME, KEY_NAME] {
         let from = source.join(name);
         if secret_store::regular_file_exists(&from)? {
             copy_private(&from, &dest.join(name))?;
         }
     }
+    let recorded = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    secret_store::write_private_file(
+        &dest.join(SOURCE_POINTER),
+        recorded.to_string_lossy().as_bytes(),
+    )?;
     Ok(true)
 }
 
+/// Consistent snapshot. Copying `-wal`/`-shm` beside a live writer can tear the file.
+fn copy_sqlite_snapshot(from: &Path, to: &Path) -> Result<(), SecretStoreError> {
+    if secret_store::regular_file_exists(to)? {
+        return Err(SecretStoreError::Corrupt);
+    }
+    let copied = (|| {
+        let src =
+            rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(map_sqlite)?;
+        src.busy_timeout(Duration::from_millis(300))
+            .map_err(map_sqlite)?;
+        let mut dst = rusqlite::Connection::open(to).map_err(map_sqlite)?;
+        dst.busy_timeout(Duration::from_millis(300))
+            .map_err(map_sqlite)?;
+        {
+            let backup = rusqlite::backup::Backup::new(&src, &mut dst).map_err(map_sqlite)?;
+            match backup.step(-1).map_err(map_sqlite)? {
+                rusqlite::backup::StepResult::Done => {}
+                rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
+                    return Err(SecretStoreError::DatabaseBusy);
+                }
+                rusqlite::backup::StepResult::More => {
+                    return Err(SecretStoreError::Legacy(
+                        "无法复制 SQLite 沙箱：备份没有完成。".to_string(),
+                    ));
+                }
+                _ => {
+                    return Err(SecretStoreError::Legacy(
+                        "无法复制 SQLite 沙箱：备份没有完成。".to_string(),
+                    ));
+                }
+            }
+        }
+        let checkpointed = dst
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .is_ok();
+        Ok(checkpointed)
+    })();
+    let checkpointed = match copied {
+        Ok(done) => done,
+        Err(err) => {
+            let _ = fs::remove_file(to);
+            return Err(err);
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(to, fs::Permissions::from_mode(0o600))?;
+    }
+    if checkpointed {
+        if let Some(name) = to.file_name().and_then(|item| item.to_str()) {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let side = to.with_file_name(format!("{name}{suffix}"));
+                if side != *to {
+                    let _ = fs::remove_file(side);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn map_sqlite(err: rusqlite::Error) -> SecretStoreError {
+    match &err {
+        rusqlite::Error::SqliteFailure(code, _)
+            if code.code == rusqlite::ErrorCode::DatabaseBusy
+                || code.code == rusqlite::ErrorCode::DatabaseLocked =>
+        {
+            SecretStoreError::DatabaseBusy
+        }
+        _ => SecretStoreError::Legacy(format!("无法复制 SQLite 沙箱：{err}")),
+    }
+}
+
+/// After the destination vault read-back succeeds, the source ciphertext and
+/// key are no longer needed. Rename them in place so a later launch does not
+/// keep a second copy of the password material.
+pub fn retire_legacy_secrets(dir: &Path) -> Result<Vec<PathBuf>, SecretStoreError> {
+    let meta = fs::symlink_metadata(dir)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(SecretStoreError::RefusingSymlink);
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let mut renamed = Vec::new();
+    for name in [PRIVATE_NAME, KEY_NAME] {
+        let from = dir.join(name);
+        if !secret_store::regular_file_exists(&from)? {
+            continue;
+        }
+        let mut index = 0u32;
+        let to = loop {
+            let file_name = if index == 0 {
+                format!("{name}.migrated-{stamp}")
+            } else {
+                format!("{name}.migrated-{stamp}-{index}")
+            };
+            let candidate = dir.join(file_name);
+            match fs::symlink_metadata(&candidate) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(SecretStoreError::RefusingSymlink);
+                }
+                Ok(_) => {
+                    index += 1;
+                    if index > 20 {
+                        return Err(SecretStoreError::Corrupt);
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => break candidate,
+                Err(err) => return Err(err.into()),
+            }
+        };
+        fs::rename(&from, &to)?;
+        renamed.push(to);
+    }
+    Ok(renamed)
+}
+
+pub fn retire_imported_source(dest: &Path) -> Result<Vec<PathBuf>, SecretStoreError> {
+    let pointer = dest.join(SOURCE_POINTER);
+    let Some(bytes) = secret_store::read_regular_file(&pointer)? else {
+        return Ok(Vec::new());
+    };
+    let text = String::from_utf8(bytes).map_err(|_| SecretStoreError::Corrupt)?;
+    let source = PathBuf::from(text.trim());
+    if source.as_os_str().is_empty() {
+        return Err(SecretStoreError::Corrupt);
+    }
+    if same_dir(dest, &source)? {
+        let _ = fs::remove_file(&pointer);
+        return Ok(Vec::new());
+    }
+    match fs::symlink_metadata(&source) {
+        Ok(meta) if meta.file_type().is_symlink() => return Err(SecretStoreError::RefusingSymlink),
+        Ok(meta) if !meta.is_dir() => return Err(SecretStoreError::Corrupt),
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let _ = fs::remove_file(&pointer);
+            return Ok(Vec::new());
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let dest_private = secret_store::regular_file_exists(&dest.join(PRIVATE_NAME))?;
+    let migrated = secret_store::regular_file_exists(&dest.join(MARKER_NAME))?;
+    if dest_private && !migrated {
+        return Ok(Vec::new());
+    }
+    let retired = retire_legacy_secrets(&source)?;
+    if secret_store::regular_file_exists(&pointer)? {
+        fs::remove_file(&pointer)?;
+    }
+    Ok(retired)
+}
+
 fn dest_has_state(dir: &Path) -> Result<bool, SecretStoreError> {
-    Ok(
-        secret_store::regular_file_exists(&dir.join("sandbox.sqlite"))?
-            || secret_store::regular_file_exists(&dir.join(PRIVATE_NAME))?
-            || secret_store::regular_file_exists(&dir.join("secrets.vault"))?,
-    )
+    Ok(secret_store::regular_file_exists(&dir.join(SQLITE_NAME))?
+        || secret_store::regular_file_exists(&dir.join(PRIVATE_NAME))?
+        || secret_store::regular_file_exists(&dir.join("secrets.vault"))?)
 }
 
 fn source_has_state(dir: &Path) -> Result<bool, SecretStoreError> {
-    Ok(
-        secret_store::regular_file_exists(&dir.join("sandbox.sqlite"))?
-            || secret_store::regular_file_exists(&dir.join(PRIVATE_NAME))?,
-    )
+    Ok(secret_store::regular_file_exists(&dir.join(SQLITE_NAME))?
+        || secret_store::regular_file_exists(&dir.join(PRIVATE_NAME))?)
 }
 
 fn same_dir(left: &Path, right: &Path) -> Result<bool, SecretStoreError> {
@@ -321,16 +480,18 @@ fn copy_private(from: &Path, to: &Path) -> Result<(), SecretStoreError> {
 }
 
 pub fn candidate_dirs(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let legacy = std::env::var("TONGYUN_LEGACY_DATA_DIR").ok();
+    legacy_candidates(legacy, extra)
+}
+
+fn legacy_candidates(legacy_env: Option<String>, extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(value) = std::env::var("TONGYUN_LEGACY_DATA_DIR") {
+    if let Some(value) = legacy_env {
         if !value.is_empty() {
             out.push(PathBuf::from(value));
         }
     }
     out.extend(extra.iter().cloned());
-    if let Ok(cwd) = std::env::current_dir() {
-        out.push(cwd.join(".local"));
-    }
     out
 }
 
@@ -439,21 +600,134 @@ mod tests {
     }
 
     #[test]
-    fn import_copies_owned_files_once() {
+    fn import_copies_a_consistent_sqlite_snapshot_and_retires_source_secrets() {
         let source = temp_dir();
         write_legacy(&source, "synthetic-db-password");
-        fs::write(source.join("sandbox.sqlite"), b"sqlite-bytes").unwrap();
+        let db_path = source.join(SQLITE_NAME);
+        let source_conn = rusqlite::Connection::open(&db_path).unwrap();
+        source_conn
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+                 INSERT INTO customers (id, name) VALUES (1, '林小满');
+                 INSERT INTO customers (id, name) VALUES (2, '周明远');",
+            )
+            .unwrap();
         let dest = temp_dir();
         assert!(import_tree(&dest, &source).unwrap());
         assert!(!import_tree(&dest, &source).unwrap());
-        assert_eq!(
-            fs::read(dest.join("sandbox.sqlite")).unwrap(),
-            b"sqlite-bytes"
-        );
+        assert!(!dest.join("sandbox.sqlite-wal").exists());
+        assert!(!dest.join("sandbox.sqlite-shm").exists());
+        drop(source_conn);
+        let copied = rusqlite::Connection::open(dest.join(SQLITE_NAME)).unwrap();
+        let count: i64 = copied
+            .query_row("SELECT COUNT(*) FROM customers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let mode = fs::metadata(dest.join(SQLITE_NAME))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(source.join(PRIVATE_NAME).exists());
+        assert!(dest.join(SOURCE_POINTER).exists());
         let report = migrate_connection_passwords(&dest).unwrap();
         assert_eq!(report.imported, 1);
-        assert!(source.join(PRIVATE_NAME).exists());
+        let retired = retire_imported_source(&dest).unwrap();
+        assert_eq!(retired.len(), 2);
+        assert!(!source.join(PRIVATE_NAME).exists());
+        assert!(!source.join(KEY_NAME).exists());
+        assert!(retired.iter().all(|path| path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(".migrated-")));
+        assert!(!dest.join(SOURCE_POINTER).exists());
+        assert!(dest.join(KEY_NAME).exists());
         let _ = fs::remove_dir_all(&source);
         let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn retire_waits_until_destination_migration_verifies() {
+        let source = temp_dir();
+        write_legacy(&source, "synthetic-db-password");
+        let dest = temp_dir();
+        assert!(import_tree(&dest, &source).unwrap());
+        let held = retire_imported_source(&dest).unwrap();
+        assert!(held.is_empty());
+        assert!(source.join(PRIVATE_NAME).exists());
+        assert!(source.join(KEY_NAME).exists());
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn a_locked_sqlite_file_is_not_copied_piecewise() {
+        let source = temp_dir();
+        let db_path = source.join(SQLITE_NAME);
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE t(id INTEGER PRIMARY KEY);
+                 INSERT INTO t VALUES (1);",
+            )
+            .unwrap();
+        }
+        let err_log = source.join("holder.err");
+        let err_file = File::create(&err_log).unwrap();
+        let mut holder = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1], isolation_level=None); c.execute('begin exclusive'); time.sleep(30)")
+            .arg(&db_path)
+            .stderr(std::process::Stdio::from(err_file))
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        if let Some(status) = holder.try_wait().unwrap() {
+            panic!(
+                "holder exited {status}: {}",
+                fs::read_to_string(&err_log).unwrap_or_default()
+            );
+        }
+        let probe = rusqlite::Connection::open(&db_path).unwrap();
+        probe.busy_timeout(Duration::from_millis(50)).unwrap();
+        let held = probe.execute_batch("BEGIN IMMEDIATE;").is_err();
+        let dest = temp_dir();
+        let result = if held {
+            import_tree(&dest, &source)
+        } else {
+            Err(SecretStoreError::DatabaseBusy)
+        };
+        let _ = holder.kill();
+        let _ = holder.wait();
+        assert!(held, "the other process did not lock the database");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, SecretStoreError::DatabaseBusy),
+            "expected busy, got {err}"
+        );
+        assert!(!dest.join(SQLITE_NAME).exists());
+        let _ = fs::remove_dir_all(&source);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn legacy_candidates_do_not_include_the_working_directory() {
+        assert!(legacy_candidates(None, &[]).is_empty());
+        assert!(legacy_candidates(Some(String::new()), &[]).is_empty());
+        let explicit = PathBuf::from("/explicit/tongyun-data");
+        assert_eq!(
+            legacy_candidates(None, std::slice::from_ref(&explicit)),
+            vec![explicit]
+        );
+        assert_eq!(
+            legacy_candidates(Some("/opt/old-tongyun".to_string()), &[]),
+            vec![PathBuf::from("/opt/old-tongyun")]
+        );
+        let cwd = std::env::current_dir().unwrap().join(".local");
+        assert!(!legacy_candidates(None, &[]).contains(&cwd));
     }
 }

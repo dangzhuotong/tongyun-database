@@ -8,12 +8,12 @@
 pub mod desktop_host;
 pub mod legacy_config;
 pub mod secret_store;
-pub mod vault_cli;
 pub mod settings;
+pub mod vault_cli;
 
 pub use desktop_host::{
-    app_config_dir, find_node, node_version_supported, prepare_desktop_dir,
-    resolve_secrets_command, resolve_server_script, PrepareReport,
+    app_config_dir, command_owns_sidecar, find_node, is_our_sidecar, node_version_supported,
+    prepare_desktop_dir, resolve_secrets_command, resolve_server_script, PrepareReport,
 };
 pub use legacy_config::{candidate_dirs, migrate_connection_passwords, PasswordMigration};
 pub use secret_store::{

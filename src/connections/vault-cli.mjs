@@ -60,9 +60,17 @@ export function secretDelete(dir, account) {
   return { ok: true };
 }
 
+export function secretsMigrationRequested(env = process.env) {
+  return Boolean(env.TONGYUN_SECRETS_BIN) || env.TONGYUN_MIGRATE_SECRETS === '1';
+}
+
 export function activateSecrets(dir) {
-  const bin = discoverSecretsBin();
-  if (!bin) return false;
+  if (!secretsMigrationRequested()) return false;
+  const bin = process.env.TONGYUN_SECRETS_BIN || discoverSecretsBin();
+  if (!bin) {
+    console.error('已要求迁移连接密码，但找不到 tongyun-database-secrets。请先编译该命令，或设置 TONGYUN_SECRETS_BIN。');
+    process.exit(1);
+  }
   process.env.TONGYUN_SECRETS_BIN = bin;
   const result = spawnSync(bin, argv(['migrate-legacy', '--dir', dir]), {
     encoding: 'utf8',

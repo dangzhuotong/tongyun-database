@@ -20,7 +20,7 @@ CLI 的 context 文件包含 actor/taskId/connectionId/environment，prepare 的
 
 桌面壳在 `apps/desktop`（Tauri 2 + Vite + React）。`npm run desktop` 会先编译密码命令行，再打开窗口。CLI（`npm run db`）和 MCP（`npm run mcp`）仍是 Node 入口。官方安装包由 `.github/workflows/release.yml` 在 `v*` 标签上打出；`build.yml` 只在手动触发时出未签名产物。检查更新走 Tauri updater，签名私钥放在 GitHub secret `TAURI_SIGNING_PRIVATE_KEY`，不进仓库。
 
-密码文件由 `tongyun-database-secrets` 读写。桌面数据目录在 macOS 上是 `~/Library/Application Support/tongyun-database`（与旧的浏览器启动器相同），其他系统用配置目录下的 `tongyun-database`。首次启动会把空目录里还没有的旧 `.local` 数据复制过去，并把 `connections.private.json` 里的密码迁进 `secrets.vault`。没有这个命令行时，`npm start` 仍用原来的 AES 连接文件。
+密码文件由 `tongyun-database-secrets` 读写。桌面数据目录在 macOS 上是 `~/Library/Application Support/tongyun-database`（与旧的浏览器启动器相同），其他系统用配置目录下的 `tongyun-database`。桌面启动只在这个目录里就地迁移；另外只认 `TONGYUN_LEGACY_DATA_DIR`，不从进程当前目录的 `.local` 导入。导入成功并核对 vault 之后，来源目录里的 `connections.private.json` 和 `connection-key` 会改名为 `*.migrated-<时间戳>`。SQLite 用备份接口复制，不单独拷贝 `-wal`/`-shm`。`npm start` 不会因为仓库里存在 `target/debug/tongyun-database-secrets` 就迁移；只有已经设置 `TONGYUN_SECRETS_BIN`，或显式 `TONGYUN_MIGRATE_SECRETS=1` 时才会迁移。没有该命令时，开发启动仍用原来的 AES 连接文件。
 
 ## 隔离网络数据库验证
 

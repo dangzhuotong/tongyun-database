@@ -32,6 +32,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo test --locked -p tongyun-database-core
+          cargo build --locked -p tongyun-database-core --bin tongyun-database-secrets
 
       - name: Install dependencies
         run: npm ci

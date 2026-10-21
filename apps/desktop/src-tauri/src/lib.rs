@@ -1,4 +1,5 @@
 use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -7,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use tauri::Manager;
 use tongyun_database_core::{
-    app_config_dir, find_node, load_settings, prepare_desktop_dir, resolve_secrets_command,
-    resolve_server_script, save_settings, AppSettings,
+    app_config_dir, find_node, is_our_sidecar, load_settings, prepare_desktop_dir,
+    resolve_secrets_command, resolve_server_script, save_settings, AppSettings,
 };
 
 struct Host {
@@ -67,18 +68,16 @@ async fn workbench_url(
             let _ = old.wait();
         }
         let dir = app_config_dir();
-        let candidates =
-            tongyun_database_core::candidate_dirs(&[
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.local")
-            ]);
-        prepare_desktop_dir(&dir, &candidates).map_err(report)?;
+        let candidates = tongyun_database_core::candidate_dirs(&[]);
+        let prepared = prepare_desktop_dir(&dir, &candidates).map_err(report)?;
+        note_retired(&dir, &prepared.retired);
         let node = find_node(None)?;
         let roots = server_roots(resource.as_deref());
         let server = resolve_server_script(&roots)
             .ok_or_else(|| "找不到工作台服务 src/server.mjs".to_string())?;
         let exe = std::env::current_exe().map_err(report)?;
         let (secrets_bin, prefix) = resolve_secrets_command(None, &exe);
-        stop_previous(&dir.join("sidecar.pid"));
+        stop_previous(&dir.join("sidecar.pid"), &dir);
         let _ = fs::remove_file(dir.join("endpoint.json"));
         let log = OpenOptions::new()
             .create(true)
@@ -94,6 +93,8 @@ async fn workbench_url(
         let mut command = Command::new(&node);
         command
             .arg(&server)
+            .arg("--data-dir")
+            .arg(&dir)
             .current_dir(
                 server
                     .parent()
@@ -105,9 +106,13 @@ async fn workbench_url(
             .env("TONGYUN_DESKTOP", "1")
             .env("TONGYUN_SECRETS_BIN", &secrets_bin)
             .env("TONGYUN_SECRETS_PREFIX", prefix.join(" "))
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(stderr));
+        #[cfg(debug_assertions)]
+        {
+            command.env("TONGYUN_DESKTOP_DEV", "1");
+        }
         let child = command
             .spawn()
             .map_err(|err| format!("工作台进程启动失败：{err}"))?;
@@ -175,19 +180,44 @@ fn endpoint_alive(url: &str) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
-fn stop_previous(pid_path: &Path) {
+fn note_retired(dir: &Path, retired: &[PathBuf]) {
+    if retired.is_empty() {
+        return;
+    }
+    let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("server.log"))
+    else {
+        return;
+    };
+    let names = retired
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(
+        log,
+        "已将旧目录中的连接密码文件改名为 {names}。密码在当前数据目录的 secrets.vault。"
+    );
+}
+
+fn stop_previous(pid_path: &Path, data_dir: &Path) {
     let Ok(text) = fs::read_to_string(pid_path) else {
         return;
     };
-    let Ok(pid) = text.trim().parse::<i32>() else {
+    let Ok(pid) = text.trim().parse::<u32>() else {
         return;
     };
-    if pid <= 1 || pid as u32 == std::process::id() {
+    if pid <= 1 || pid == std::process::id() {
+        return;
+    }
+    if !is_our_sidecar(pid, data_dir) {
         return;
     }
     #[cfg(unix)]
     unsafe {
-        libc::kill(pid, libc::SIGTERM);
+        libc::kill(pid as i32, libc::SIGTERM);
     }
     #[cfg(not(unix))]
     {

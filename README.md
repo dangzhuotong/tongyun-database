@@ -19,9 +19,9 @@
 1. 前往 [Releases](../../releases) 页面，下载最新的通用包 `*_universal.dmg`。
 2. 打开镜像，把 **tongyun-database** 拖入 `/Applications`。
 3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
-4. 窗口里就是数据工作台。数据文件仍在 `~/Library/Application Support/tongyun-database/`。已有的连接会在第一次启动时迁入加密密码文件，保存设置不会弹出钥匙串密码。
+4. 窗口里就是数据工作台。数据文件仍在 `~/Library/Application Support/tongyun-database/`。已有的连接会在第一次启动时迁入加密密码文件，保存设置不会弹出钥匙串密码。从别的目录导入时，旧的加密连接文件和密钥会改名保留，不再留一份可用的密码副本。
 
-> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。桌面壳启动工作台时会检查；版本不够时窗口里会说明。开发时也可以继续 `npm start`，用浏览器打开终端里的地址。
+> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。从访达打开时 PATH 很短，桌面壳会查找 Homebrew、Volta、fnm、nvm、asdf 和登录 shell；仍找不到时窗口会说明，也可以把 `TONGYUN_NODE` 设为 node 的绝对路径。开发时也可以继续 `npm start`，用浏览器打开终端里的地址。
 
 ## 开始使用
 
