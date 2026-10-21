@@ -4,14 +4,18 @@
 
 ```text
 public/                    原生 Web 工作台、设计令牌、虚拟结果表格
-src/server.mjs             本机 HTTP、令牌、来源校验、路由
+apps/desktop/              Tauri 2 + Vite 窗口：嵌入工作台、设置、检查更新
+crates/tongyun-database-core/
+                           文件密码库、旧连接迁移、设置文件
+src/server.mjs             本机 HTTP、令牌、来源校验、路由（桌面以 sidecar 启动）
 src/cli.mjs                SQLite 无界面适配器，JSON 输出
-src/connections/           加密连接存储、网络适配器、独立执行账本与 MySQL 查询子进程
+src/mcp/server.mjs         stdio MCP，只走本机 HTTP
+src/connections/           连接存储、网络适配器、独立执行账本与 MySQL 查询子进程
 src/change-control/
   core.mjs                 计划、快照、确认、乐观并发、补偿、审计
   query-worker.mjs         只读授权器、行数/体积限制、独立查询进程
 scripts/benchmark.mjs       临时百万行 SQLite 基准及 EXPLAIN
-.local/                    忽略提交的合成数据沙箱与本机令牌
+.local/                    开发时忽略提交的合成数据沙箱与本机令牌
 ```
 
 ## 核心不变量

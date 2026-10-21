@@ -2,7 +2,7 @@
 
 人与 AI 共用的数据库工作台。连接树、SQL 编辑器、虚拟结果表格、变更检查器与操作时间线共用同一个执行核心。
 
-当前交付为 **本地 Web 工作台 + Agent HTTP API**，支持 SQLite 沙箱、MySQL 和 Redis 7+ 的真实连接；CLI 当前仅适配 SQLite。首次启动只创建合成 SQLite，网络连接由用户在「新建连接」中添加。尚无 PostgreSQL / D1、桌面安装包或内置大模型聊天。原 Drizzle / SQLite / D1 模板方向保留为后续适配，不能当成已实现功能。
+当前交付为 **Tauri 桌面壳 + 本地 Web 工作台 + Agent HTTP API**，支持 SQLite 沙箱、MySQL 和 Redis 7+ 的真实连接；CLI 当前仅适配 SQLite。首次启动只创建合成 SQLite，网络连接由用户在「新建连接」中添加。尚无 PostgreSQL / D1 或内置大模型聊天。原 Drizzle / SQLite / D1 模板方向保留为后续适配，不能当成已实现功能。
 
 ## 核心流程
 
@@ -16,12 +16,12 @@
 
 ## Mac 安装
 
-1. 前往 [Releases](../../releases) 页面，下载最新的 `tongyun-database-mac.zip`。
-2. 解压后将 **橦云数据库.app** 拖入 `/Applications`。
+1. 前往 [Releases](../../releases) 页面，下载最新的通用包 `*_universal.dmg`。
+2. 打开镜像，把 **tongyun-database** 拖入 `/Applications`。
 3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
-4. 应用启动后会自动在浏览器中打开工作台界面（`http://127.0.0.1:4319`）。数据文件存储于 `~/Library/Application Support/tongyun-database/`。
+4. 窗口里就是数据工作台。数据文件仍在 `~/Library/Application Support/tongyun-database/`。已有的连接会在第一次启动时迁入加密密码文件，保存设置不会弹出钥匙串密码。
 
-> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。应用启动时会自动检测；若未找到，将弹窗提示下载链接。
+> **前置要求**：本机需安装 **Node.js >= 24**（仓库 `engines` 要求 24.14+，`.nvmrc` 为 24；[nodejs.org](https://nodejs.org)）。桌面壳启动工作台时会检查；版本不够时窗口里会说明。开发时也可以继续 `npm start`，用浏览器打开终端里的地址。
 
 ## 开始使用
 
@@ -60,7 +60,7 @@ Cursor 或 Claude Desktop 可这样配置（把路径和令牌换成你本机的
 
 - **MySQL**：连接和测试、基础表树与按需结构、受限只读 SELECT、主键游标分页、单行 UPDATE 的真实预览/回滚 SQL。BIGINT/DECIMAL 按字符串返回，避免丢精度。变更只支持可验证恢复的 InnoDB 表，要求单列主键、可检查触发器元数据，拒绝触发器、关联外键和不支持的列类型。
 - **Redis 7+**：SCAN 模式搜索、类型/TTL/内存、String、Hash、List、Set、ZSet 的单 Key 编辑，TTL 与删除计划。回滚使用原 DUMP 快照和绝对过期时间；旧值已到期则拒绝复活。普通 Key 限 UTF-8、2 KiB 键名，编辑限制 1 MiB / 1000 元素；集群、Stream、二进制值未实现。
-- **连接默认只读**。非生产连接可显式开启受控变更，生产连接禁止写入。密码 AES-256-GCM 加密落盘，密钥在本机私有目录；不能抵抗同一文件所有者读取密钥，不是系统钥匙串。
+- **连接默认只读**。非生产连接可显式开启受控变更，生产连接禁止写入。密码在本机 `secrets.vault`（目录 0700，文件 0600），密钥是同目录的 `secret.key`；不能抵抗同一文件所有者读取密钥，不使用系统钥匙串。没有密码命令时，开发用的 `npm start` 仍把整份连接记录放在 AES-256-GCM 文件里。
 
 ## 追溯与恢复边界
 

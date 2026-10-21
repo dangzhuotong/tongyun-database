@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 旧的浏览器启动器打包。正式安装包是 Tauri workflow（.github/workflows/release.yml）。
 # build-mac-app.sh — 生成 dist/橦云数据库.app 并打包为 dist/tongyun-database-mac.zip
 # 用法：bash scripts/build-mac-app.sh
 set -euo pipefail

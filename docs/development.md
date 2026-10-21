@@ -18,7 +18,9 @@
 
 CLI 的 context 文件包含 actor/taskId/connectionId/environment，prepare 的 input 文件包含 table/key/changes。inspect 会输出私有原值与 SQL 参数，仅在受控本机查看，禁止提交输出。HTTP 接入见 [Agent API](agent-api.md)。
 
-没有桌面打包、云端部署或生产迁移命令。
+桌面壳在 `apps/desktop`（Tauri 2 + Vite + React）。`npm run desktop` 会先编译密码命令行，再打开窗口。CLI（`npm run db`）和 MCP（`npm run mcp`）仍是 Node 入口。官方安装包由 `.github/workflows/release.yml` 在 `v*` 标签上打出；`build.yml` 只在手动触发时出未签名产物。检查更新走 Tauri updater，签名私钥放在 GitHub secret `TAURI_SIGNING_PRIVATE_KEY`，不进仓库。
+
+密码文件由 `tongyun-database-secrets` 读写。桌面数据目录在 macOS 上是 `~/Library/Application Support/tongyun-database`（与旧的浏览器启动器相同），其他系统用配置目录下的 `tongyun-database`。首次启动会把空目录里还没有的旧 `.local` 数据复制过去，并把 `connections.private.json` 里的密码迁进 `secrets.vault`。没有这个命令行时，`npm start` 仍用原来的 AES 连接文件。
 
 ## 隔离网络数据库验证
 

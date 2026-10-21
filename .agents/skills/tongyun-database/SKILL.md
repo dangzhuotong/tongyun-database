@@ -48,6 +48,7 @@ npm run services:stop    # 仅删除本项目所有的容器，不影响其他�
 | 目的 | 命令 |
 | --- | --- |
 | 启动工作台 | `npm start` |
+| 桌面窗口 | `npm run desktop`（需 Rust；密码文件不走钥匙串） |
 | 全部检查（语法 + 集成） | `npm run check` |
 | 运行测试 | `npm test`（只跑 `test/**/*.test.mjs`） |
 | SQLite CLI | `npm run db -- --help` |

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+:root {
+  --color-bg: var(--ty-bg);
+  --color-surface: var(--ty-surface);
+  --color-surface-raised: var(--ty-surface-raised);
+  --color-text: var(--ty-text);
+  --color-text-muted: var(--ty-text-muted);
+  --color-accent: var(--ty-matcha);
+  --color-border: var(--ty-border);
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--ty-font-sans);
+  font-size: var(--ty-font-size-md);
+}
+
+.shell-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: var(--ty-radius-sm);
+  padding: 4px 10px;
+  font-size: var(--ty-font-size-sm);
+  cursor: pointer;
+}
+
+.shell-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

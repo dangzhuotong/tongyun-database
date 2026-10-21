@@ -2,7 +2,7 @@
 
 ## 当前定位
 
-人与 AI 共用的数据库工作台，原数据库模板仓方向已扩展，依据见 [ADR 0002](docs/decisions/0002-shared-workbench.md)。已实现 Node.js 本地服务、原生 Web 界面、SQLite/MySQL/Redis 适配器、安全变更核心、SQLite CLI 和 Agent HTTP API；没有桌面壳或内置 LLM。
+人与 AI 共用的数据库工作台，原数据库模板仓方向已扩展，依据见 [ADR 0002](docs/decisions/0002-shared-workbench.md)。已实现 Node.js 本地服务、原生 Web 界面、Tauri 桌面壳、SQLite/MySQL/Redis 适配器、安全变更核心、SQLite CLI 和 Agent HTTP API；没有内置 LLM。桌面壳只负责窗口、更新和本机加密密码文件，数据库执行仍走 Node，见 [ADR 0004](docs/decisions/0004-tauri-desktop-sidecar.md)。
 
 ## 修改入口
 
@@ -11,6 +11,7 @@
 | 行为与范围 | [PRD](docs/prd.md)、[主流程](docs/user-flows.md) |
 | 模块与数据安全 | [架构](docs/architecture.md)、[ADR 0002](docs/decisions/0002-shared-workbench.md) |
 | 界面 | [DESIGN.md](DESIGN.md)、[界面守则](docs/design/ui-guard.md) |
+| 桌面壳、更新、密码文件 | [ADR 0004](docs/decisions/0004-tauri-desktop-sidecar.md)、`apps/desktop`、`crates/tongyun-database-core` |
 | Agent 接入 | [Agent API](docs/agent-api.md) |
 | 命令与验证 | [开发文档](docs/development.md)、[验收](docs/testing/acceptance-tests.md) |
 | 配套技能现状 | [skills](docs/skills.md) |
@@ -21,7 +22,7 @@
 2. 每项数据变更必须有真实旧值、预览、正向和回滚 SQL（Redis 为恢复命令及 DUMP 快照）、参数、绑定目标和确认指纹。无可靠回滚则拒绝执行。
 3. SQLite 在事务中核对并原子写审计；MySQL 使用事务/行锁核对，Redis 用受控单命令 Lua 核对值与过期时间。远程操作必须先持久化意图，结果不明则阻止重试，不能宣称跨数据库原子提交。
 4. 开始与失败也记录；审计不可用时不执行业务变更。中断只显示 started 时需核查计划状态，禁止盲目重试。
-5. 真实凭据、客户数据、数据库与私有计划不进仓、不打印。测试只用合成数据及本项目拥有的隔离实例，不读取已有业务凭据；生产连接仅允许显式配置后的只读操作。
+5. 真实凭据、客户数据、数据库与私有计划不进仓、不打印。测试只用合成数据及本项目拥有的隔离实例，不读取已有业务凭据；生产连接仅允许显式配置后的只读操作。数据库密码只进本机加密文件（目录 0700、文件 0600），不进 macOS 钥匙串，不链接 `keyring` / Stronghold。
 6. 默认最多 1000 行；查询不能在 HTTP 主线程中运行。不能为了性能跳过追溯或回滚保护。
 7. 修改协议、输出或状态时同步 UI、CLI、Agent 文档与行为测试。
 
