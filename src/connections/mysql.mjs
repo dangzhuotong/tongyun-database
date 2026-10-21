@@ -85,6 +85,7 @@ export class MysqlAdapter {
   bounded(c, sql, values = [], signal) {
     return new Promise((resolve, reject) => {
       const rows = []; let columns = []; let bytes = 0; let done = false;
+      // Close this read socket now. withMysqlCancel rejects only after KILL QUERY finishes.
       const onAbort = () => finish(new ChangeError('QUERY_CANCELLED'));
       const timer = setTimeout(() => finish(new ChangeError(signal?.aborted ? 'QUERY_CANCELLED' : 'QUERY_TIMEOUT')), 2200);
       function finish(error, truncated = false) {

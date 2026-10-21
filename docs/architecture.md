@@ -30,7 +30,7 @@ SQL 和执行参数保存在私有 `_tongyun_queries`，前后快照与回滚参
 
 ## 性能与隔离
 
-查询在 worker 中使用只读连接及 SQLite authorizer，仅放行普通表读取与有限函数；外围 LIMIT 1001 检测截断，返回最多 1000 行 / 2 MiB。2 秒超时终止查询子进程。调用方可通过 `POST /api/queries/:queryId/cancel` 提前中止：SQLite 结束查询进程，MySQL 用另一连接 `KILL QUERY`，Redis SCAN 停止后续分批。取消写入审计。无法保证任意无索引 SQL 快速完成。
+查询在 worker 中使用只读连接及 SQLite authorizer，仅放行普通表读取与有限函数；外围 LIMIT 1001 检测截断，返回最多 1000 行 / 2 MiB。2 秒超时终止查询子进程。调用方可通过 `POST /api/queries/:queryId/cancel` 中止已经登记且仍在执行的查询：SQLite 结束查询进程，MySQL 用另一连接 `KILL QUERY` 且在该命令结束后才返回 cancelled，Redis SCAN 停止后续分批。未知或已结束的 id 返回 `not_running`，不写取消审计。成功取消写入审计。无法保证任意无索引 SQL 快速完成。
 
 表浏览采用整数主键 `WHERE pk > cursor ORDER BY pk LIMIT 1001`，不做 COUNT(*) 或深 OFFSET。UI 只渲染可视行及缓冲。schema 与写入仍在主线程执行，因此大量元数据和复杂约束的生产负载尚未验证。
 

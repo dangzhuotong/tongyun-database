@@ -54,7 +54,7 @@ test('read-only MCP tools are registered unless writes are explicitly enabled', 
     await Promise.all([client.connect(clientTransport), mcp.connect(serverTransport)]);
     t.after(async () => { await client.close(); await mcp.close(); });
     const names = (await client.listTools()).tools.map(tool => tool.name);
-    for (const name of ['list_connections', 'capabilities', 'get_schema', 'run_query', 'browse_table', 'redis_scan', 'redis_read', 'list_plans', 'get_plan', 'get_audit']) {
+    for (const name of ['list_connections', 'capabilities', 'get_schema', 'run_query', 'cancel_query', 'browse_table', 'redis_scan', 'redis_read', 'list_plans', 'get_plan', 'get_audit']) {
       assert.ok(names.includes(name), name);
     }
     const writesOn = options.allowWrites === true || options.env?.TONGYUN_DB_MCP_ALLOW_WRITES === '1';
@@ -69,6 +69,7 @@ test('each read tool calls the Agent API path and headers and returns the body',
     ['get_schema', {}, 'GET', '/api/schema'],
     ['get_schema', { table: 'users' }, 'GET', '/api/schema?table=users'],
     ['run_query', { sql: 'SELECT 1' }, 'POST', '/api/query', { sql: 'SELECT 1' }],
+    ['cancel_query', { queryId: '11111111-1111-4111-8111-111111111111' }, 'POST', '/api/queries/11111111-1111-4111-8111-111111111111/cancel', {}],
     ['browse_table', { table: 'users', after: '10' }, 'POST', '/api/browse', { table: 'users', after: '10' }],
     ['redis_scan', { pattern: 'a*', cursor: '0' }, 'POST', '/api/redis/scan', { pattern: 'a*', cursor: '0' }],
     ['redis_read', { key: 'user:1' }, 'POST', '/api/redis/read', { key: 'user:1' }],
@@ -122,4 +123,35 @@ test('upstream errors pass through and write tools still require approvedDigest'
   assert.equal(rolled.isError, false);
   assert.equal(requests.at(-1).url, '/api/plans/plan-9/rollback');
   assert.deepEqual(requests.at(-1).body, { approvedDigest: 'abc123' });
+});
+
+test('MCP responses omit plan digests so a write-enabled agent cannot copy one into apply', async t => {
+  const secret = 'cafebabe'.repeat(8);
+  const { client, requests } = await session(t, {
+    allowWrites: true,
+    handler: () => ({
+      body: {
+        ok: true,
+        id: 'plan-1',
+        digest: secret,
+        plans: [{ id: 'plan-1', digest: secret, state: 'prepared' }],
+        events: [{ action: 'prepare_update', digest: secret }],
+      },
+    }),
+  });
+  for (const [name, args] of [
+    ['get_plan', { id: 'plan-1' }],
+    ['list_plans', {}],
+    ['create_plan', { changes: { name: 'Next' } }],
+    ['get_audit', {}],
+  ]) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, false, name);
+    assert.equal(result.content[0].text.includes(secret), false, name);
+    assert.equal(result.content[0].text.includes('"digest"'), false, name);
+  }
+  const applied = await client.callTool({ name: 'apply_plan', arguments: { id: 'plan-1', approvedDigest: 'from-reviewer' } });
+  assert.equal(applied.content[0].text.includes(secret), false);
+  assert.equal(applied.content[0].text.includes('from-reviewer'), false);
+  assert.deepEqual(requests.at(-1).body, { approvedDigest: 'from-reviewer' });
 });

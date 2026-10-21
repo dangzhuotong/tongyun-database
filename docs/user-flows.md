@@ -10,7 +10,7 @@
 
 读取本机 endpoint 与令牌 → 发现能力 → 携带 actor/task → 读取 schema → 发起只读查询或分页 → 准备更新计划 → 显式读取计划 → 按用户已授权范围提供 digest 执行 → 读取结果；同 task 的计划出现在 UI 中。
 
-当前生产连接强制只读，非生产变更由连接 allowWrites 与具体计划指纹约束。不能把 Agent 自报 actor、计划 digest 当作真实身份或用户授权。
+当前生产连接强制只读，非生产变更由连接 allowWrites 与具体计划指纹约束。不能把 Agent 自报 actor、计划 digest 当作真实身份或用户授权。MCP 即使打开写工具也不回传 digest，执行指纹须由审阅过该计划的人另行提供。
 
 ## 网络连接
 
