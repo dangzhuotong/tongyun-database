@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,8 +24,9 @@ test('release desktop frame ancestors do not include the vite dev port', () => {
 
 test('data dir is taken from the sidecar argument', () => {
   assert.equal(directoryFromArgs(['node', 'server.mjs']), '');
-  const dir = directoryFromArgs(['node', 'server.mjs', '--data-dir', '/tmp/tongyun data']);
-  assert.equal(dir, '/tmp/tongyun data');
+  const arg = join(tmpdir(), 'tongyun data');
+  const dir = directoryFromArgs(['node', 'server.mjs', '--data-dir', arg]);
+  assert.equal(dir, resolve(arg));
 });
 
 function waitForEndpoint(dir, child, timeoutMs) {
