@@ -16,8 +16,8 @@
 
 ## Mac 安装
 
-1. 前往 [Releases](../../releases) 页面，下载最新的通用包 `*_universal.dmg`。
-2. 打开镜像，把 **tongyun-database** 拖入 `/Applications`。
+1. 前往 [Releases](../../releases) 页面，下载最新的 macOS 包：v0.1.1 为 `tongyun-database-mac.zip`，之后由 `release.yml` 构建的版本为 `*_universal.dmg`。
+2. 打开镜像或解压压缩包，把其中的 **tongyun-database.app**（v0.1.1 为 **橦云数据库.app**）拖入 `/Applications`。
 3. **首次打开**：因应用尚未公证，需**右键（或按住 Control 单击）→ 打开**，在弹出对话框中确认。之后可直接双击启动。
 4. 窗口里就是数据工作台。数据文件仍在 `~/Library/Application Support/tongyun-database/`。已有的连接会在第一次启动时迁入加密密码文件，保存设置不会弹出钥匙串密码。从别的目录导入时，旧目录里的连接密钥会被删除，只留下无法单独解密的密文。
 
